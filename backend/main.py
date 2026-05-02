@@ -1,9 +1,6 @@
 import asyncio
-import hashlib
-import hmac as _hmac
 import logging
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
@@ -344,47 +341,30 @@ async def auth_login(body: LoginBody, request: Request):
 async def auth_verify_otp(body: VerifyOTPBody, request: Request):
     ip = _get_client_ip(request)
 
-    # Peek at the challenge before consuming
-    challenge = otp_store._store.get(body.challenge_id)
+    result = otp_store.verify(body.challenge_id, body.code)
 
-    if challenge is None:
-        return JSONResponse({"detail": "Challenge not found or expired"}, status_code=410)
+    if result.status == "not_found" or result.status == "consumed" or result.status == "expired":
+        return JSONResponse({"detail": "OTP expired or not found. Please log in again."}, status_code=410)
 
-    if challenge.consumed:
-        return JSONResponse({"detail": "Challenge already used"}, status_code=410)
+    if result.status == "exhausted":
+        logger.warning("OTP exhausted for challenge %s from IP %s", body.challenge_id, ip)
+        return JSONResponse(
+            {"detail": "Too many incorrect attempts. Please log in again."},
+            status_code=429,
+        )
 
-    if datetime.now(tz=timezone.utc) > challenge.expires_at:
-        del otp_store._store[body.challenge_id]
-        return JSONResponse({"detail": "OTP expired. Please log in again."}, status_code=410)
-
-    if challenge.attempts_left <= 0:
-        del otp_store._store[body.challenge_id]
-        return JSONResponse({"detail": "Too many attempts. Please log in again."}, status_code=429)
-
-    code_hash = hashlib.sha256(body.code.encode()).hexdigest()
-    if not _hmac.compare_digest(code_hash, challenge.code_hash):
-        challenge.attempts_left -= 1
-        if challenge.attempts_left <= 0:
-            del otp_store._store[body.challenge_id]
-            logger.warning("OTP exhausted for challenge %s from IP %s", body.challenge_id, ip)
-            return JSONResponse(
-                {"detail": "Too many incorrect attempts. Please log in again."},
-                status_code=429,
-            )
+    if result.status == "wrong":
         logger.warning(
             "Wrong OTP for challenge %s from IP %s (%d attempt(s) left)",
-            body.challenge_id, ip, challenge.attempts_left,
+            body.challenge_id, ip, result.attempts_left,
         )
         return JSONResponse(
-            {"detail": "Wrong code", "attempts_left": challenge.attempts_left},
+            {"detail": "Wrong code", "attempts_left": result.attempts_left},
             status_code=401,
         )
 
-    # Success
-    username = challenge.username
-    challenge.consumed = True
-    del otp_store._store[body.challenge_id]
-
+    # result.status == "ok"
+    username = result.username
     logger.info("Successful OTP login for username=%r from IP %s", username, ip)
 
     # Send success notification (best-effort)

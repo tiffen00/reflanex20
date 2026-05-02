@@ -156,7 +156,7 @@ async function submitOTP(code) {
     otpError.textContent = 'Erreur réseau. Réessayez.';
     otpError.classList.remove('hidden');
   } finally {
-    if (!validateBtn.disabled || validateBtn.textContent === '⏳ Validation…') {
+    if (!validateBtn.disabled && validateBtn.textContent === '⏳ Validation…') {
       validateBtn.textContent = 'Valider';
     }
   }

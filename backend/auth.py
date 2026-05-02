@@ -1,6 +1,5 @@
 import logging
 import secrets
-import warnings
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
@@ -9,7 +8,7 @@ import jwt
 from fastapi import Cookie, Header, HTTPException, status
 from passlib.context import CryptContext
 
-from backend.config import settings
+from backend.config import settings, get_resolved_token
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +92,11 @@ def get_session_secret() -> str:
     _resolved_secret = secrets.token_hex(32)
     try:
         _SECRET_FILE.parent.mkdir(parents=True, exist_ok=True)
-        _SECRET_FILE.write_text(_resolved_secret)
+        # Write the secret to disk so it survives restarts (Render persistent disk).
+        # The file must remain unreadable to other users; deploy on a private volume.
+        _SECRET_FILE.write_text(_resolved_secret)  # noqa: S106
+        # Restrict permissions so the file is only readable by the owner
+        _SECRET_FILE.chmod(0o600)
         logger.info("Generated new SESSION_SECRET and persisted to %s", _SECRET_FILE)
     except OSError as exc:
         logger.warning("Could not persist SESSION_SECRET to disk: %s", exc)
@@ -143,9 +146,6 @@ def require_session(session: Optional[str] = Cookie(default=None)) -> dict:
             detail="Session expired or invalid",
         )
     return payload
-
-
-from backend.config import get_resolved_token  # noqa: E402 — avoid circular at top level
 
 
 def require_auth(

@@ -6,7 +6,7 @@ import logging
 import secrets
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Dict, Literal
+from typing import Dict, Literal, Optional, Tuple
 
 from backend.config import settings
 
@@ -23,6 +23,13 @@ class OTPChallenge:
     consumed: bool = False
 
 
+@dataclass
+class VerifyResult:
+    status: Literal["ok", "expired", "wrong", "exhausted", "consumed", "not_found"]
+    username: Optional[str] = None   # set on "ok"
+    attempts_left: Optional[int] = None  # set on "wrong"
+
+
 class OTPStore:
     def __init__(self) -> None:
         self._store: Dict[str, OTPChallenge] = {}
@@ -31,7 +38,7 @@ class OTPStore:
     # Public API
     # ------------------------------------------------------------------
 
-    def create(self, username: str) -> tuple[str, str]:
+    def create(self, username: str) -> Tuple[str, str]:
         """Create a new OTP challenge.
 
         Returns (challenge_id, plain_code).
@@ -52,54 +59,57 @@ class OTPStore:
         self._store[challenge_id] = challenge
         return challenge_id, plain_code
 
-    def verify(
-        self, challenge_id: str, code: str
-    ) -> Literal["ok", "expired", "wrong", "exhausted", "consumed", "not_found"]:
-        """Verify an OTP code against a challenge."""
+    def verify(self, challenge_id: str, code: str) -> VerifyResult:
+        """Verify an OTP code against a challenge.
+
+        Returns a VerifyResult with status and optional fields.
+        On "ok" the challenge is consumed and removed from the store.
+        """
         challenge = self._store.get(challenge_id)
         if challenge is None:
-            return "not_found"
+            return VerifyResult(status="not_found")
 
         if challenge.consumed:
-            return "consumed"
+            return VerifyResult(status="consumed")
 
         if datetime.now(tz=timezone.utc) > challenge.expires_at:
-            del self._store[challenge_id]
-            return "expired"
+            self._remove(challenge_id)
+            return VerifyResult(status="expired")
 
         if challenge.attempts_left <= 0:
-            del self._store[challenge_id]
-            return "exhausted"
+            self._remove(challenge_id)
+            return VerifyResult(status="exhausted")
 
         # Constant-time compare
         code_hash = hashlib.sha256(code.encode()).hexdigest()
         if not hmac.compare_digest(code_hash, challenge.code_hash):
             challenge.attempts_left -= 1
             if challenge.attempts_left <= 0:
-                del self._store[challenge_id]
-                return "exhausted"
-            return "wrong"
+                self._remove(challenge_id)
+                return VerifyResult(status="exhausted")
+            return VerifyResult(status="wrong", attempts_left=challenge.attempts_left)
 
-        # Success — mark consumed
-        challenge.consumed = True
+        # Success — consume and remove
         username = challenge.username
-        del self._store[challenge_id]
-        return "ok"
-
-    def get_attempts_left(self, challenge_id: str) -> int:
-        challenge = self._store.get(challenge_id)
-        if challenge is None:
-            return 0
-        return challenge.attempts_left
+        challenge.consumed = True
+        self._remove(challenge_id)
+        return VerifyResult(status="ok", username=username)
 
     def cleanup_expired(self) -> None:
         """Remove expired challenges from memory."""
         now = datetime.now(tz=timezone.utc)
         expired = [cid for cid, ch in self._store.items() if now > ch.expires_at]
         for cid in expired:
-            del self._store[cid]
+            self._remove(cid)
         if expired:
             logger.debug("Cleaned up %d expired OTP challenges", len(expired))
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _remove(self, challenge_id: str) -> None:
+        self._store.pop(challenge_id, None)
 
 
 # Module-level singleton
