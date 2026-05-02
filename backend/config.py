@@ -18,6 +18,16 @@ class Settings(BaseSettings):
     MAX_ZIP_SIZE_MB: int = 50
     PUBLIC_BASE_URL: str = "http://localhost:8000"
 
+    # Web auth
+    WEB_USERNAME: str = "admin"
+    WEB_PASSWORD: str = ""
+    SESSION_SECRET: str = ""
+    SESSION_TTL_HOURS: int = 24
+    OTP_TTL_SECONDS: int = 300
+    OTP_MAX_ATTEMPTS: int = 3
+    OTP_LENGTH: int = 5
+    LOGIN_RATE_LIMIT_PER_15MIN: int = 5
+
     def get_domains(self) -> List[str]:
         if not self.DOMAINS:
             return []

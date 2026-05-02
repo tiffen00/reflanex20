@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import List, Optional
@@ -15,14 +14,24 @@ from fastapi import (
     File,
     status,
 )
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from backend.auth import require_api_token
+from backend.auth import (
+    require_api_token,
+    require_auth,
+    require_session,
+    verify_web_credentials,
+    create_session_token,
+    verify_session_token,
+    get_session_secret,
+)
 from backend.config import settings, get_resolved_token
 from backend.database import Campaign, Link, get_db, init_db
+from backend.otp_store import otp_store
+from backend.rate_limit import login_rate_limiter
 from backend.storage import StorageError, delete_campaign_files, get_file_path, validate_and_unzip
 from backend.utils import generate_slug, slugify
 
@@ -40,6 +49,9 @@ async def lifespan(app: FastAPI):
     # Ensure DB tables exist
     init_db()
 
+    # Initialise session secret (generate + persist if needed)
+    get_session_secret()
+
     # Log / auto-generate API token
     token = get_resolved_token()
     if not settings.API_TOKEN:
@@ -55,6 +67,12 @@ async def lifespan(app: FastAPI):
         print(f"[reflanex20] STARTUP API_TOKEN={token}", flush=True)
     else:
         logger.info("🔑 API_TOKEN is set from environment.")
+
+    # Warn if WEB_PASSWORD is not set
+    if not settings.WEB_PASSWORD:
+        logger.warning(
+            "⚠️  WEB_PASSWORD not set — web login will be disabled until set in env."
+        )
 
     # Start Telegram bot if token is configured
     bot_task = None
@@ -132,6 +150,16 @@ class NewLinkBody(BaseModel):
     domain: Optional[str] = None
 
 
+class LoginBody(BaseModel):
+    username: str
+    password: str
+
+
+class VerifyOTPBody(BaseModel):
+    challenge_id: str
+    code: str
+
+
 # ──────────────────────────────────────────────
 # Helpers
 # ──────────────────────────────────────────────
@@ -183,11 +211,31 @@ async def healthz():
 
 
 @app.get("/")
-async def serve_frontend():
+async def serve_frontend(request: Request):
+    # Redirect to login if no valid session
+    session_token = request.cookies.get("session")
+    if not session_token or not verify_session_token(session_token):
+        return RedirectResponse(url="/login", status_code=302)
     index = FRONTEND_DIR / "index.html"
     if index.exists():
         return FileResponse(str(index))
     return JSONResponse({"status": "ok", "message": "Reflanex20 API"})
+
+
+@app.get("/login")
+async def serve_login():
+    page = FRONTEND_DIR / "login.html"
+    if page.exists():
+        return FileResponse(str(page))
+    return JSONResponse({"error": "login.html not found"}, status_code=404)
+
+
+@app.get("/login/otp")
+async def serve_otp():
+    page = FRONTEND_DIR / "otp.html"
+    if page.exists():
+        return FileResponse(str(page))
+    return JSONResponse({"error": "otp.html not found"}, status_code=404)
 
 
 @app.get("/c/{slug}", include_in_schema=False)
@@ -235,10 +283,130 @@ async def _serve_campaign_file(slug: str, path: str, request: Request, db: Sessi
 
 
 # ──────────────────────────────────────────────
+# Auth API routes
+# ──────────────────────────────────────────────
+
+def _get_client_ip(request: Request) -> str:
+    forwarded_for = request.headers.get("x-forwarded-for")
+    if forwarded_for:
+        return forwarded_for.split(",")[0].strip()
+    if request.client:
+        return request.client.host
+    return "unknown"
+
+
+def _is_secure(request: Request) -> bool:
+    base = settings.PUBLIC_BASE_URL
+    return base.startswith("https") or request.url.scheme == "https"
+
+
+@app.post("/api/auth/login")
+async def auth_login(body: LoginBody, request: Request):
+    ip = _get_client_ip(request)
+
+    # Rate limit per IP
+    if not login_rate_limiter.is_allowed(ip):
+        retry_after = login_rate_limiter.retry_after(ip)
+        logger.warning("Rate limit exceeded for login from IP %s", ip)
+        return JSONResponse(
+            {"detail": "Too many login attempts. Try again later."},
+            status_code=429,
+            headers={"Retry-After": str(retry_after)},
+        )
+
+    # Verify credentials (constant-time)
+    if not verify_web_credentials(body.username, body.password):
+        logger.warning("Failed login attempt for username=%r from IP %s", body.username, ip)
+        return JSONResponse({"detail": "Invalid username or password"}, status_code=401)
+
+    # Create OTP challenge
+    challenge_id, plain_code = otp_store.create(body.username)
+    logger.info("OTP challenge created for username=%r from IP %s", body.username, ip)
+
+    # Send OTP via Telegram — strict: 503 if Telegram fails
+    try:
+        from backend.telegram_bot import send_otp_to_admins
+        await send_otp_to_admins(plain_code, body.username, ip)
+    except Exception as exc:
+        logger.error("Failed to send OTP via Telegram: %s", exc)
+        return JSONResponse(
+            {"detail": "Could not deliver OTP via Telegram. Is the bot configured?"},
+            status_code=503,
+        )
+
+    return {"challenge_id": challenge_id, "expires_in": settings.OTP_TTL_SECONDS}
+
+
+@app.post("/api/auth/verify-otp")
+async def auth_verify_otp(body: VerifyOTPBody, request: Request):
+    ip = _get_client_ip(request)
+
+    result = otp_store.verify(body.challenge_id, body.code)
+
+    if result.status in ("not_found", "consumed", "expired"):
+        return JSONResponse({"detail": "OTP expired or not found. Please log in again."}, status_code=410)
+
+    if result.status == "exhausted":
+        logger.warning("OTP exhausted for challenge %s from IP %s", body.challenge_id, ip)
+        return JSONResponse(
+            {"detail": "Too many incorrect attempts. Please log in again."},
+            status_code=429,
+        )
+
+    if result.status == "wrong":
+        logger.warning(
+            "Wrong OTP for challenge %s from IP %s (%d attempt(s) left)",
+            body.challenge_id, ip, result.attempts_left,
+        )
+        return JSONResponse(
+            {"detail": "Wrong code", "attempts_left": result.attempts_left},
+            status_code=401,
+        )
+
+    # result.status == "ok"
+    username = result.username
+    logger.info("Successful OTP login for username=%r from IP %s", username, ip)
+
+    # Send success notification (best-effort)
+    try:
+        from backend.telegram_bot import send_login_success
+        await send_login_success(username, ip)
+    except Exception as exc:
+        logger.warning("Could not send login success notification: %s", exc)
+
+    # Issue session JWT cookie
+    token = create_session_token(username)
+    secure = _is_secure(request)
+    resp = JSONResponse({"ok": True})
+    resp.set_cookie(
+        key="session",
+        value=token,
+        httponly=True,
+        secure=secure,
+        samesite="lax",
+        max_age=settings.SESSION_TTL_HOURS * 3600,
+        path="/",
+    )
+    return resp
+
+
+@app.post("/api/auth/logout")
+async def auth_logout():
+    resp = JSONResponse({"ok": True})
+    resp.delete_cookie(key="session", path="/")
+    return resp
+
+
+@app.get("/api/auth/me")
+async def auth_me(payload: dict = Depends(require_session)):
+    return {"username": payload.get("sub")}
+
+
+# ──────────────────────────────────────────────
 # API routes
 # ──────────────────────────────────────────────
 
-@app.post("/api/upload", dependencies=[Depends(require_api_token)])
+@app.post("/api/upload", dependencies=[Depends(require_auth)])
 async def upload_campaign(
     file: UploadFile = File(...),
     name: str = Form(...),
@@ -270,13 +438,13 @@ async def upload_campaign(
     return {"campaign_id": campaign.id, "name": campaign.name}
 
 
-@app.get("/api/campaigns", dependencies=[Depends(require_api_token)])
+@app.get("/api/campaigns", dependencies=[Depends(require_auth)])
 def list_campaigns(db: Session = Depends(get_db)):
     campaigns = db.query(Campaign).all()
     return [_campaign_out(c) for c in campaigns]
 
 
-@app.post("/api/campaigns/{campaign_id}/links", dependencies=[Depends(require_api_token)])
+@app.post("/api/campaigns/{campaign_id}/links", dependencies=[Depends(require_auth)])
 def create_link(
     campaign_id: int,
     body: NewLinkBody,
@@ -304,7 +472,7 @@ def create_link(
     return {"slug": slug, "full_url": _make_full_url(slug, domain)}
 
 
-@app.delete("/api/links/{slug}", dependencies=[Depends(require_api_token)])
+@app.delete("/api/links/{slug}", dependencies=[Depends(require_auth)])
 def deactivate_link(slug: str, db: Session = Depends(get_db)):
     link = db.query(Link).filter(Link.slug == slug).first()
     if not link:
@@ -314,7 +482,7 @@ def deactivate_link(slug: str, db: Session = Depends(get_db)):
     return {"slug": slug, "is_active": False}
 
 
-@app.delete("/api/campaigns/{campaign_id}", dependencies=[Depends(require_api_token)])
+@app.delete("/api/campaigns/{campaign_id}", dependencies=[Depends(require_auth)])
 def delete_campaign(campaign_id: int, db: Session = Depends(get_db)):
     campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
     if not campaign:
@@ -328,6 +496,6 @@ def delete_campaign(campaign_id: int, db: Session = Depends(get_db)):
     return {"deleted": campaign_id}
 
 
-@app.get("/api/domains", dependencies=[Depends(require_api_token)])
+@app.get("/api/domains", dependencies=[Depends(require_auth)])
 def get_domains():
     return {"domains": settings.get_domains()}

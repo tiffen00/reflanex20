@@ -1,14 +1,9 @@
 /* ─── State ─── */
-let apiToken = localStorage.getItem('apiToken') || '';
 let activeCampaignId = null;
 let domains = [];
 
 /* ─── DOM refs ─── */
-const loginOverlay   = document.getElementById('login-overlay');
 const app            = document.getElementById('app');
-const tokenInput     = document.getElementById('token-input');
-const loginBtn       = document.getElementById('login-btn');
-const loginError     = document.getElementById('login-error');
 const logoutBtn      = document.getElementById('logout-btn');
 const tabs           = document.querySelectorAll('.nav-tab');
 const tabContents    = document.querySelectorAll('.tab-content');
@@ -32,41 +27,22 @@ const generateLinkBtn = document.getElementById('generate-link-btn');
 const linksList       = document.getElementById('links-list');
 
 /* ─── Init ─── */
-if (apiToken) {
-  showApp();
-} else {
-  loginOverlay.classList.remove('hidden');
-}
-
-/* ─── Login / logout ─── */
-loginBtn.addEventListener('click', async () => {
-  const token = tokenInput.value.trim();
-  if (!token) return;
-  // Validate by hitting /api/domains
-  const res = await apiFetch('/api/domains', 'GET', null, token);
-  if (res.ok) {
-    apiToken = token;
-    localStorage.setItem('apiToken', token);
-    showApp();
-  } else {
-    loginError.classList.remove('hidden');
+(async () => {
+  // Verify session is still valid; redirect to login if not
+  const res = await apiFetch('/api/auth/me');
+  if (!res.ok) {
+    window.location.href = '/login';
+    return;
   }
-});
-
-tokenInput.addEventListener('keydown', e => { if (e.key === 'Enter') loginBtn.click(); });
-
-logoutBtn.addEventListener('click', () => {
-  localStorage.removeItem('apiToken');
-  apiToken = '';
-  location.reload();
-});
-
-function showApp() {
-  loginOverlay.classList.add('hidden');
-  app.classList.remove('hidden');
   loadDomains();
   loadCampaigns();
-}
+})();
+
+/* ─── Logout ─── */
+logoutBtn.addEventListener('click', async () => {
+  await apiFetch('/api/auth/logout', 'POST');
+  window.location.href = '/login';
+});
 
 /* ─── Tabs ─── */
 tabs.forEach(tab => {
@@ -127,7 +103,7 @@ uploadBtn.addEventListener('click', async () => {
 
   const res = await fetch('/api/upload', {
     method: 'POST',
-    headers: { 'X-API-Token': apiToken },
+    credentials: 'include',
     body: fd,
   });
 
@@ -336,10 +312,11 @@ function renderLinks(links) {
 }
 
 /* ─── API helper ─── */
-function apiFetch(path, method = 'GET', body = null, token = apiToken) {
+function apiFetch(path, method = 'GET', body = null) {
   const opts = {
     method,
-    headers: { 'X-API-Token': token },
+    credentials: 'include',
+    headers: {},
   };
   if (body !== null) {
     opts.headers['Content-Type'] = 'application/json';
