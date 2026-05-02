@@ -323,23 +323,30 @@ async def callback_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     elif action == "stats":
-        db = SessionLocal()
         try:
-            campaigns = db.query(Campaign).all()
-        finally:
-            db.close()
-        if not campaigns:
+            db = SessionLocal()
+            try:
+                campaigns = db.query(Campaign).all()
+            finally:
+                db.close()
+            if not campaigns:
+                await query.edit_message_text(
+                    MESSAGES["no_campaigns"],
+                    reply_markup=_back_to_menu_keyboard(),
+                    parse_mode=ParseMode.HTML,
+                )
+                return
             await query.edit_message_text(
-                MESSAGES["no_campaigns"],
-                reply_markup=_back_to_menu_keyboard(),
+                "📊 <b>Statistiques</b>\n\nChoisis une campagne :",
+                reply_markup=_campaigns_keyboard(campaigns, callback_prefix="stats:show"),
                 parse_mode=ParseMode.HTML,
             )
-            return
-        await query.edit_message_text(
-            "📊 <b>Statistiques</b>\n\nChoisis une campagne :",
-            reply_markup=_campaigns_keyboard(campaigns, callback_prefix="stats:show"),
-            parse_mode=ParseMode.HTML,
-        )
+        except Exception as exc:
+            logger.exception("callback_menu stats error: %s", exc)
+            await query.edit_message_text(
+                f"⚠️ Erreur lors du chargement des statistiques.\nDétail : {exc}",
+                reply_markup=_back_to_menu_keyboard(),
+            )
 
     elif action == "help":
         await query.edit_message_text(
@@ -553,45 +560,51 @@ async def callback_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info("Callback stats:%s campaign_id=%s from user %s", action, campaign_id, query.from_user.id)
 
     if action == "show":
-        db = SessionLocal()
         try:
-            campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
-            if not campaign:
-                await query.edit_message_text("❌ Campagne introuvable.", reply_markup=_back_to_menu_keyboard())
-                return
+            db = SessionLocal()
+            try:
+                campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
+                if not campaign:
+                    await query.edit_message_text("❌ Campagne introuvable.", reply_markup=_back_to_menu_keyboard())
+                    return
 
-            active = [l for l in campaign.links if l.is_active]
-            inactive = [l for l in campaign.links if not l.is_active]
-            total_clicks = sum(l.clicks for l in campaign.links)
-            total_links = len(campaign.links)
+                active = [l for l in campaign.links if l.is_active]
+                inactive = [l for l in campaign.links if not l.is_active]
+                total_clicks = sum(l.clicks for l in campaign.links)
+                total_links = len(campaign.links)
 
-            lines = [f"📊 <b>Statistiques — {campaign.name}</b>\n"]
-            lines.append(f"🔗 {total_links} lien(s) au total ({len(active)} actif(s), {len(inactive)} désactivé(s))\n")
+                lines = [f"📊 <b>Statistiques — {campaign.name}</b>\n"]
+                lines.append(f"🔗 {total_links} lien(s) au total ({len(active)} actif(s), {len(inactive)} désactivé(s))\n")
 
-            if active:
-                lines.append("<b>Liens actifs :</b>")
-                for l in active:
-                    domain_label = l.domain or settings.get_public_hostname()
-                    lines.append(f"• <code>{l.slug}</code> → {l.clicks} clic(s) ({domain_label})")
+                if active:
+                    lines.append("<b>Liens actifs :</b>")
+                    for l in active:
+                        domain_label = l.domain or settings.get_public_hostname()
+                        lines.append(f"• <code>{l.slug}</code> → {l.clicks} clic(s) ({domain_label})")
 
-            if inactive:
-                lines.append("\n<b>Liens désactivés :</b>")
-                for l in inactive:
-                    lines.append(f"• <code>{l.slug}</code> → {l.clicks} clic(s)")
+                if inactive:
+                    lines.append("\n<b>Liens désactivés :</b>")
+                    for l in inactive:
+                        lines.append(f"• <code>{l.slug}</code> → {l.clicks} clic(s)")
 
-            lines.append(f"\n<b>Total : {total_clicks} clic(s)</b>")
+                lines.append(f"\n<b>Total : {total_clicks} clic(s)</b>")
 
-        finally:
-            db.close()
-
-        await query.edit_message_text(
-            "\n".join(lines),
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔗 Nouveau lien", callback_data=f"link:new:{campaign_id}")],
-                [InlineKeyboardButton("◀ Retour", callback_data="menu:stats")],
-            ]),
-            parse_mode=ParseMode.HTML,
-        )
+                await query.edit_message_text(
+                    "\n".join(lines),
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🔗 Nouveau lien", callback_data=f"link:new:{campaign_id}")],
+                        [InlineKeyboardButton("◀ Retour", callback_data="menu:stats")],
+                    ]),
+                    parse_mode=ParseMode.HTML,
+                )
+            finally:
+                db.close()
+        except Exception as exc:
+            logger.exception("callback_stats error: %s", exc)
+            await query.edit_message_text(
+                f"⚠️ Erreur lors du chargement des statistiques.\nDétail : {exc}",
+                reply_markup=_back_to_menu_keyboard(),
+            )
 
 
 # ──────────────────────────────────────────────
