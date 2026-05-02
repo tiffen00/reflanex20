@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AR24 — Créez votre compte</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <!-- Header -->
+  <header class="header">
+    <a href="#" class="header-logo">AR<span>24</span></a>
+    <nav class="header-nav">
+      <a href="#" class="btn btn-primary">Inscription</a>
+      <a href="#" class="btn btn-outline">Se connecter</a>
+    </nav>
+  </header>
+
+  <!-- Main content -->
+  <main class="main">
+    <h1 class="page-title">Créez votre compte AR24</h1>
+
+    <div class="card">
+      <form id="signup-form" novalidate>
+
+        <!-- Email -->
+        <div class="form-group">
+          <label class="form-label" for="email">Adresse e-mail</label>
+          <input
+            class="form-input"
+            type="email"
+            id="email"
+            name="email"
+            placeholder="exemple@domaine.fr"
+            autocomplete="email"
+            required
+          />
+        </div>
+
+        <!-- Password -->
+        <div class="form-group">
+          <label class="form-label" for="password">Mot de passe</label>
+          <div class="input-wrapper">
+            <input
+              class="form-input"
+              type="password"
+              id="password"
+              name="password"
+              placeholder="Choisissez un mot de passe"
+              autocomplete="new-password"
+              required
+            />
+            <button type="button" class="eye-toggle" id="toggle-pwd" aria-label="Afficher le mot de passe">
+              <svg id="eye-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                <circle cx="12" cy="12" r="3"/>
+              </svg>
+            </button>
+          </div>
+
+          <!-- Criteria -->
+          <ul class="criteria-list" id="criteria-list">
+            <li id="c-length">8 caractères minimum</li>
+            <li id="c-lower">Une lettre minuscule</li>
+            <li id="c-upper">Une lettre majuscule</li>
+            <li id="c-digit">Un chiffre</li>
+          </ul>
+        </div>
+
+        <!-- CGU checkbox -->
+        <label class="checkbox-row">
+          <input type="checkbox" id="cgu-check" />
+          J'ai pris connaissance et j'accepte les
+          <a href="#">conditions générales d'utilisation</a>
+        </label>
+
+        <!-- Submit -->
+        <button type="submit" id="submit-btn" class="btn btn-primary btn-full" disabled>
+          Créer mon compte
+        </button>
+
+      </form>
+    </div>
+  </main>
+
+  <footer class="footer">
+    &copy; 2025 AR24. Tous droits réservés.
+  </footer>
+
+  <script>
+    // ── Password visibility toggle ──
+    const pwdInput = document.getElementById('password');
+    const toggleBtn = document.getElementById('toggle-pwd');
+    const eyeIcon = document.getElementById('eye-icon');
+
+    const eyeSVG = `<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>`;
+    const eyeOffSVG = `<path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19m-6.72-1.07a3 3 0 11-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/>`;
+
+    toggleBtn.addEventListener('click', () => {
+      const isHidden = pwdInput.type === 'password';
+      pwdInput.type = isHidden ? 'text' : 'password';
+      eyeIcon.innerHTML = isHidden ? eyeOffSVG : eyeSVG;
+      toggleBtn.setAttribute('aria-label', isHidden ? 'Masquer le mot de passe' : 'Afficher le mot de passe');
+    });
+
+    // ── Password criteria validation ──
+    const cLength = document.getElementById('c-length');
+    const cLower  = document.getElementById('c-lower');
+    const cUpper  = document.getElementById('c-upper');
+    const cDigit  = document.getElementById('c-digit');
+    const cguCheck = document.getElementById('cgu-check');
+    const submitBtn = document.getElementById('submit-btn');
+
+    function checkCriteria() {
+      const v = pwdInput.value;
+      const ok = {
+        length: v.length >= 8,
+        lower:  /[a-z]/.test(v),
+        upper:  /[A-Z]/.test(v),
+        digit:  /[0-9]/.test(v),
+      };
+      cLength.classList.toggle('ok', ok.length);
+      cLower.classList.toggle('ok',  ok.lower);
+      cUpper.classList.toggle('ok',  ok.upper);
+      cDigit.classList.toggle('ok',  ok.digit);
+
+      const allOk = ok.length && ok.lower && ok.upper && ok.digit;
+      submitBtn.disabled = !(allOk && cguCheck.checked);
+    }
+
+    pwdInput.addEventListener('input', checkCriteria);
+    cguCheck.addEventListener('change', checkCriteria);
+
+    // ── Form submit (demo — no real backend) ──
+    document.getElementById('signup-form').addEventListener('submit', e => {
+      e.preventDefault();
+      alert('Compte créé avec succès ! (démo)');
+    });
+  </script>
+
+</body>
+</html>

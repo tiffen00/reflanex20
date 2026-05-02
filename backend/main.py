@@ -74,6 +74,17 @@ async def lifespan(app: FastAPI):
             "⚠️  WEB_PASSWORD not set — web login will be disabled until set in env."
         )
 
+    # Log Telegram bot token and admin IDs presence (never log actual values)
+    if settings.TELEGRAM_BOT_TOKEN:
+        logger.info("🤖 TELEGRAM_BOT_TOKEN: set")
+    else:
+        logger.warning("🤖 TELEGRAM_BOT_TOKEN: not set — bot and OTP login will be disabled")
+    admin_ids = settings.get_admin_ids()
+    if admin_ids:
+        logger.info("👥 TELEGRAM_ADMIN_IDS: set (%d admin(s))", len(admin_ids))
+    else:
+        logger.warning("👥 TELEGRAM_ADMIN_IDS: not set — no admin will receive OTP codes")
+
     # Start Telegram bot if token is configured
     bot_task = None
     if settings.TELEGRAM_BOT_TOKEN:
@@ -115,6 +126,19 @@ app = FastAPI(title="Reflanex20", version="1.0.0", lifespan=lifespan)
 # Static frontend
 if FRONTEND_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
+
+
+# ──────────────────────────────────────────────
+# Global exception handler — always return JSON
+# ──────────────────────────────────────────────
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger.exception("Unhandled exception on %s: %s", request.url.path, exc)
+    return JSONResponse(
+        {"detail": "Erreur serveur interne"},
+        status_code=500,
+    )
 
 
 # ──────────────────────────────────────────────
@@ -210,6 +234,34 @@ async def healthz():
     return {"status": "ok"}
 
 
+@app.get("/api/diag")
+async def diag(db: Session = Depends(get_db)):
+    """Public diagnostic endpoint — returns config status without exposing secrets."""
+    # Telegram bot status
+    telegram_status: str
+    if not settings.TELEGRAM_BOT_TOKEN:
+        telegram_status = "not_configured"
+    else:
+        try:
+            from backend.telegram_bot import _bot_instance
+            telegram_status = "configured" if _bot_instance is not None else "error"
+        except Exception:
+            telegram_status = "error"
+
+    admin_ids = settings.get_admin_ids()
+    domains = settings.get_domains()
+    session_ok = bool(get_session_secret())
+
+    return {
+        "telegram_bot": telegram_status,
+        "telegram_admins_count": len(admin_ids),
+        "session_secret": "ok" if session_ok else "missing",
+        "domains_count": len(domains),
+        "public_base_url": settings.PUBLIC_BASE_URL,
+        "version": "1.0.0",
+    }
+
+
 @app.get("/")
 async def serve_frontend(request: Request):
     # Redirect to login if no valid session
@@ -269,12 +321,19 @@ async def _serve_campaign_file(slug: str, path: str, request: Request, db: Sessi
     db.commit()
 
     # Resolve file
-    file_rel = path.strip("/") if path.strip("/") else campaign.entry_file
-    file_path = get_file_path(campaign.storage_path, file_rel)
+    path_stripped = path.strip("/")
+    if not path_stripped:
+        # Root access — use entry_file
+        if not campaign.entry_file:
+            raise HTTPException(
+                status_code=404,
+                detail="Fichier d'entrée non défini pour cette campagne",
+            )
+        file_rel = campaign.entry_file
+    else:
+        file_rel = path_stripped
 
-    if file_path is None:
-        # Try entry_file as fallback
-        file_path = get_file_path(campaign.storage_path, campaign.entry_file)
+    file_path = get_file_path(campaign.storage_path, file_rel)
 
     if file_path is None:
         raise HTTPException(status_code=404, detail="Fichier introuvable")
@@ -302,39 +361,44 @@ def _is_secure(request: Request) -> bool:
 
 @app.post("/api/auth/login")
 async def auth_login(body: LoginBody, request: Request):
-    ip = _get_client_ip(request)
-
-    # Rate limit per IP
-    if not login_rate_limiter.is_allowed(ip):
-        retry_after = login_rate_limiter.retry_after(ip)
-        logger.warning("Rate limit exceeded for login from IP %s", ip)
-        return JSONResponse(
-            {"detail": "Too many login attempts. Try again later."},
-            status_code=429,
-            headers={"Retry-After": str(retry_after)},
-        )
-
-    # Verify credentials (constant-time)
-    if not verify_web_credentials(body.username, body.password):
-        logger.warning("Failed login attempt for username=%r from IP %s", body.username, ip)
-        return JSONResponse({"detail": "Invalid username or password"}, status_code=401)
-
-    # Create OTP challenge
-    challenge_id, plain_code = otp_store.create(body.username)
-    logger.info("OTP challenge created for username=%r from IP %s", body.username, ip)
-
-    # Send OTP via Telegram — strict: 503 if Telegram fails
     try:
-        from backend.telegram_bot import send_otp_to_admins
-        await send_otp_to_admins(plain_code, body.username, ip)
-    except Exception as exc:
-        logger.error("Failed to send OTP via Telegram: %s", exc)
-        return JSONResponse(
-            {"detail": "Could not deliver OTP via Telegram. Is the bot configured?"},
-            status_code=503,
-        )
+        ip = _get_client_ip(request)
 
-    return {"challenge_id": challenge_id, "expires_in": settings.OTP_TTL_SECONDS}
+        # Rate limit per IP
+        if not login_rate_limiter.is_allowed(ip):
+            retry_after = login_rate_limiter.retry_after(ip)
+            logger.warning("Rate limit exceeded for login from IP %s", ip)
+            return JSONResponse(
+                {"detail": "Too many login attempts. Try again later."},
+                status_code=429,
+                headers={"Retry-After": str(retry_after)},
+            )
+
+        # Verify credentials (constant-time)
+        if not verify_web_credentials(body.username, body.password):
+            logger.warning("Failed login attempt for username=%r from IP %s", body.username, ip)
+            return JSONResponse({"detail": "Invalid username or password"}, status_code=401)
+
+        # Create OTP challenge
+        challenge_id, plain_code = otp_store.create(body.username)
+        logger.info("OTP challenge created for username=%r from IP %s", body.username, ip)
+
+        # Send OTP via Telegram — strict: 503 if Telegram fails
+        try:
+            from backend.telegram_bot import send_otp_to_admins
+            await send_otp_to_admins(plain_code, body.username, ip)
+        except Exception as exc:
+            logger.error("Failed to send OTP via Telegram: %s", exc)
+            return JSONResponse(
+                {"detail": "Le bot Telegram n'est pas configuré. Vérifiez les variables TELEGRAM_BOT_TOKEN et TELEGRAM_ADMIN_IDS."},
+                status_code=503,
+            )
+
+        return {"challenge_id": challenge_id, "expires_in": settings.OTP_TTL_SECONDS}
+
+    except Exception as exc:
+        logger.exception("Unexpected error in auth_login: %s", exc)
+        return JSONResponse({"detail": "Erreur serveur"}, status_code=500)
 
 
 @app.post("/api/auth/verify-otp")

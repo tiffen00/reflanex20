@@ -57,46 +57,17 @@ def validate_and_unzip(
         if ".." in name or name.startswith("/"):
             raise StorageError(f"Chemin dangereux détecté dans le zip : {name}")
 
-    # Find HTML entry file at root level
-    root_html_files = [
-        n for n in names
-        if "/" not in n.strip("/") and n.lower().endswith(".html")
-    ]
-    # Also accept files in a single top-level directory
-    if not root_html_files:
-        # Try single-directory zip (e.g., campaign/index.html)
-        top_dirs = set()
-        for n in names:
-            parts = n.split("/")
-            if len(parts) >= 2 and parts[0]:
-                top_dirs.add(parts[0])
-        if len(top_dirs) == 1:
-            top_dir = list(top_dirs)[0]
-            root_html_files = [
-                n for n in names
-                if n.startswith(top_dir + "/")
-                and n.lower().endswith(".html")
-                and n.count("/") == 1
-            ]
-
-    if not root_html_files:
-        raise StorageError(
-            "Le zip ne contient aucun fichier .html à la racine ou dans un dossier racine unique"
-        )
-
-    # Prefer index.html, fallback to first .html
-    entry_candidates = [f for f in root_html_files if Path(f).name.lower() == "index.html"]
-    entry_name = (entry_candidates or root_html_files)[0]
-    # entry_file is the bare filename only; the strip_prefix logic below ensures
-    # the file lands at dest/<entry_file> after extraction (top-level dir is stripped).
-    entry_file = Path(entry_name).name
+    # Require at least one regular file (non-directory entry)
+    regular_files = [n for n in names if not n.endswith("/")]
+    if not regular_files:
+        raise StorageError("Le fichier zip est vide ou ne contient aucun fichier valide")
 
     dest = _storage_root() / campaign_slug
     if dest.exists():
         shutil.rmtree(dest)
     dest.mkdir(parents=True, exist_ok=True)
 
-    # Extract, stripping top-level dir if needed
+    # Determine if there is a single top-level directory to strip
     top_dirs = set()
     for n in names:
         parts = n.split("/")
@@ -109,6 +80,34 @@ def validate_and_unzip(
         and all(n.startswith(list(top_dirs)[0] + "/") for n in names if n)
     ):
         strip_prefix = list(top_dirs)[0] + "/"
+
+    # Determine effective root-level files (after stripping single top-dir)
+    def _effective_name(raw: str) -> str:
+        if strip_prefix and raw.startswith(strip_prefix):
+            return raw[len(strip_prefix):]
+        return raw
+
+    root_files = [
+        _effective_name(n) for n in regular_files
+        if "/" not in _effective_name(n)
+    ]
+
+    # Auto-detect entry_file with priority order
+    entry_file = ""
+    for candidate in ("index.html", "index.php", "index.htm"):
+        if candidate in [f.lower() for f in root_files]:
+            # Use the actual filename (preserving case)
+            entry_file = next(f for f in root_files if f.lower() == candidate)
+            break
+    if not entry_file:
+        html_at_root = sorted(f for f in root_files if f.lower().endswith(".html"))
+        if html_at_root:
+            entry_file = html_at_root[0]
+    if not entry_file:
+        php_at_root = sorted(f for f in root_files if f.lower().endswith(".php"))
+        if php_at_root:
+            entry_file = php_at_root[0]
+    # If still empty: leave entry_file = "" (accepted — caller handles 404)
 
     # Pre-compute the resolved destination so path checks are fast and consistent
     resolved_dest = os.path.realpath(dest) + os.sep
