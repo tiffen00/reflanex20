@@ -34,7 +34,14 @@ class Settings(BaseSettings):
     def get_public_hostname(self) -> str:
         """Returns the hostname extracted from PUBLIC_BASE_URL."""
         parsed = urlparse(self.PUBLIC_BASE_URL)
-        return parsed.hostname or parsed.netloc or "localhost"
+        hostname = parsed.hostname or parsed.netloc
+        if not hostname:
+            logger.warning(
+                "PUBLIC_BASE_URL '%s' is malformed or missing a hostname. Falling back to 'localhost'.",
+                self.PUBLIC_BASE_URL,
+            )
+            return "localhost"
+        return hostname
 
     def get_all_domains(self) -> List[dict]:
         """Returns all domains including PUBLIC_BASE_URL as the first/default entry."""

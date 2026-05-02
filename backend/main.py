@@ -577,7 +577,7 @@ async def bot_test():
             )
 
         from datetime import datetime, timezone
-        now_str = datetime.now(tz=timezone.utc).strftime("%d/%m/%Y %H:%M UTC")
+        now_str = datetime.now(tz=timezone.utc).strftime("%d/%m/%Y %H:%M %Z")
         message = (
             "✅ <b>Test depuis le dashboard Reflanex20</b>\n\n"
             "Si tu reçois ce message, le bot fonctionne correctement !\n"
@@ -601,6 +601,6 @@ async def bot_test():
     except Exception as exc:
         logger.exception("Error sending bot test: %s", exc)
         return JSONResponse(
-            {"success": False, "error": str(exc)},
+            {"success": False, "error": "Erreur lors de l'envoi du message test"},
             status_code=503,
         )
