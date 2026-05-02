@@ -60,7 +60,7 @@ def validate_and_unzip(
     # Require at least one regular file (non-directory entry)
     regular_files = [n for n in names if not n.endswith("/")]
     if not regular_files:
-        raise StorageError("Zip vide")
+        raise StorageError("Le fichier zip est vide ou ne contient aucun fichier valide")
 
     dest = _storage_root() / campaign_slug
     if dest.exists():
