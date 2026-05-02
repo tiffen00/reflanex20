@@ -87,10 +87,15 @@ async def lifespan(app: FastAPI):
     # Start Telegram bot if token is configured
     bot_task = None
     if settings.TELEGRAM_BOT_TOKEN:
-        from backend.telegram_bot import build_application
+        from backend.telegram_bot import build_application, set_bot_username
         tg_app = build_application()
         bot_task = asyncio.create_task(_run_bot(tg_app))
         logger.info("🤖 Telegram bot started.")
+        # Fetch and cache bot username (best-effort)
+        try:
+            await set_bot_username(tg_app.bot)
+        except Exception as exc:
+            logger.warning("Could not cache bot username: %s", exc)
     else:
         logger.warning("TELEGRAM_BOT_TOKEN not set — bot disabled.")
 
@@ -294,9 +299,10 @@ async def _serve_campaign_file(slug: str, path: str, request: Request, db: Sessi
 
     # Warn if host not in configured domains
     host = request.headers.get("host", "").split(":")[0]
-    configured = settings.get_domains()
-    if configured and host not in configured:
-        logger.warning("Request from unlisted host: %s (configured: %s)", host, configured)
+    all_domains = settings.get_all_domains()
+    valid_hostnames = [d["domain"] for d in all_domains]
+    if valid_hostnames and host not in valid_hostnames:
+        logger.warning("Request from unlisted host: %s (configured: %s)", host, valid_hostnames)
 
     campaign: Optional[Campaign] = link.campaign
     if not campaign:
@@ -460,11 +466,12 @@ def create_link(
 
     domain = body.domain or None
     if domain:
-        configured = settings.get_domains()
-        if configured and domain not in configured:
+        all_domains = settings.get_all_domains()
+        valid_domains = [d["domain"] for d in all_domains]
+        if valid_domains and domain not in valid_domains:
             raise HTTPException(
                 status_code=400,
-                detail=f"Domaine non configuré. Domaines disponibles: {', '.join(configured)}",
+                detail=f"Domaine non configuré. Domaines disponibles: {', '.join(valid_domains)}",
             )
 
     slug = _unique_slug(db)
@@ -502,4 +509,98 @@ def delete_campaign(campaign_id: int, db: Session = Depends(get_db)):
 
 @app.get("/api/domains", dependencies=[Depends(require_auth)])
 def get_domains():
-    return {"domains": settings.get_domains()}
+    all_domains = settings.get_all_domains()
+    return {
+        "domains": all_domains,
+        "domains_simple": [d["domain"] for d in all_domains],
+    }
+
+
+@app.get("/api/bot/status", dependencies=[Depends(require_auth)])
+async def bot_status():
+    """Returns Telegram bot status information."""
+    if not settings.TELEGRAM_BOT_TOKEN:
+        return {
+            "configured": False,
+            "username": None,
+            "admin_ids_count": 0,
+            "last_update_seconds_ago": None,
+        }
+
+    try:
+        from backend.telegram_bot import _bot_instance, _bot_username
+        if _bot_instance is None:
+            return {
+                "configured": False,
+                "username": None,
+                "admin_ids_count": len(settings.get_admin_ids()),
+                "last_update_seconds_ago": None,
+            }
+        return {
+            "configured": True,
+            "username": _bot_username,
+            "admin_ids_count": len(settings.get_admin_ids()),
+            "last_update_seconds_ago": None,
+        }
+    except Exception as exc:
+        logger.warning("Error getting bot status: %s", exc)
+        return {
+            "configured": False,
+            "username": None,
+            "admin_ids_count": len(settings.get_admin_ids()),
+            "last_update_seconds_ago": None,
+        }
+
+
+@app.post("/api/bot/test", dependencies=[Depends(require_auth)])
+async def bot_test():
+    """Send a test message to all Telegram admins."""
+    if not settings.TELEGRAM_BOT_TOKEN:
+        return JSONResponse(
+            {"success": False, "error": "Bot non configuré (TELEGRAM_BOT_TOKEN manquant)"},
+            status_code=503,
+        )
+
+    admin_ids = settings.get_admin_ids()
+    if not admin_ids:
+        return JSONResponse(
+            {"success": False, "error": "Aucun admin configuré (TELEGRAM_ADMIN_IDS manquant)"},
+            status_code=503,
+        )
+
+    try:
+        from backend.telegram_bot import _bot_instance
+        if _bot_instance is None:
+            return JSONResponse(
+                {"success": False, "error": "Bot non démarré"},
+                status_code=503,
+            )
+
+        from datetime import datetime, timezone
+        now_str = datetime.now(tz=timezone.utc).strftime("%d/%m/%Y %H:%M %Z")
+        message = (
+            "✅ <b>Test depuis le dashboard Reflanex20</b>\n\n"
+            "Si tu reçois ce message, le bot fonctionne correctement !\n"
+            f"Heure : {now_str}"
+        )
+
+        sent = 0
+        for admin_id in admin_ids:
+            try:
+                await _bot_instance.send_message(
+                    chat_id=admin_id,
+                    text=message,
+                    parse_mode="HTML",
+                )
+                sent += 1
+            except Exception as exc:
+                logger.warning("Could not send test message to %s: %s", admin_id, exc)
+
+        return {"success": True, "sent_to": sent}
+
+    except Exception as exc:
+        logger.exception("Error sending bot test: %s", exc)
+        return JSONResponse(
+            {"success": False, "error": "Erreur lors de l'envoi du message test"},
+            status_code=503,
+        )
