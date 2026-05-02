@@ -30,6 +30,10 @@ services:
         value: "24"
       - key: LOGIN_RATE_LIMIT_PER_15MIN
         value: "5"
+      - key: ADMIN_PATH_PREFIX
+        value: /web/setlink/connect/service/ww/ww/wwww/www
+      - key: OTP_FALLBACK_LOG
+        value: "false"
     disk:
       name: data
       mountPath: /opt/render/project/src/storage

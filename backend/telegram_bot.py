@@ -5,8 +5,10 @@ from typing import Optional
 
 from telegram import (
     Bot,
+    BotCommand,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    MenuButtonCommands,
     Update,
 )
 from telegram.constants import ParseMode
@@ -43,20 +45,23 @@ MESSAGES = {
     "main_menu": (
         "👋 <b>Bienvenue sur Reflanex20</b>\n\n"
         "Voici ce que je peux faire pour toi :\n\n"
-        "📤 Uploader une nouvelle campagne (zip)\n"
+        "🔗 <b>Générer un lien</b> — utilise une campagne déjà uploadée\n"
         "📋 Voir mes campagnes\n"
-        "🔗 Générer un nouveau lien\n"
+        "📤 Uploader une nouvelle campagne (zip)\n"
         "🌐 Mes domaines disponibles\n"
         "📊 Statistiques d'une campagne\n"
         "❓ Aide\n\n"
         "Choisis une option ci-dessous :"
     ),
     "upload_start": (
-        "📤 <b>Création d'une nouvelle campagne</b>\n\n"
-        "1️⃣ Envoie-moi le fichier <b>.zip</b> de ta campagne\n"
-        "2️⃣ Mets le nom de la campagne dans la <b>légende (caption)</b> du fichier\n"
-        "    <i>Exemple de légende : promo-noel-2026</i>\n\n"
-        "⚠️ Le zip peut contenir n'importe quels fichiers : HTML, PHP, images, etc. (max 50 MB)\n\n"
+        "📤 <b>Nouvelle campagne</b>\n\n"
+        "Tu vas uploader un NOUVEAU contenu (zip).\n\n"
+        "💡 <b>Si tu veux juste un nouveau lien pour une campagne déjà uploadée</b>, "
+        "utilise plutôt <i>🔗 Générer un lien</i> depuis le menu.\n\n"
+        "Pour continuer, envoie-moi le fichier <b>.zip</b> avec le nom de la campagne "
+        "dans la <b>légende (caption)</b>.\n"
+        "    <i>Exemple : promo-noel-2026</i>\n\n"
+        "⚠️ Le zip peut contenir HTML, PHP, images, JS, CSS... (max 50 MB)\n\n"
         "Annule avec /cancel"
     ),
     "no_campaigns": (
@@ -69,14 +74,15 @@ MESSAGES = {
         "<b>🚀 Démarrage</b>\n"
         "• Tape /start ou /menu pour afficher le menu principal\n"
         "• Tous les flows se font via les boutons — pas besoin de mémoriser de commandes !\n\n"
+        "<b>🔗 Générer un lien (action la plus fréquente)</b>\n"
+        "• Clique sur <i>🔗 Générer un lien</i> depuis le menu principal\n"
+        "• Choisis la campagne existante puis le domaine\n"
+        "• Copie le lien et partage-le !\n"
+        "• Tu peux répéter cette action pour obtenir de nouveaux slugs sans re-uploader.\n\n"
         "<b>📤 Uploader une campagne</b>\n"
-        "• Clique sur <i>Nouvelle campagne</i>\n"
+        "• Clique sur <i>Nouvelle campagne</i> <b>seulement</b> si tu as un nouveau contenu à uploader\n"
         "• Envoie ton fichier .zip <b>avec une légende</b> (le nom de ta campagne)\n"
         "• Le zip peut contenir HTML, PHP, images, JS, CSS... tout est accepté\n\n"
-        "<b>🔗 Générer un lien de campagne</b>\n"
-        "• Clique sur <i>Générer un lien</i> puis choisis ta campagne\n"
-        "• Choisis le domaine (ou utilise le domaine public par défaut)\n"
-        "• Copie le lien généré et partage-le !\n\n"
         "<b>♻️ Pourquoi re-générer un lien ?</b>\n"
         "Si ton lien est <i>cramé</i> (bloqué par les plateformes), génère un nouveau slug pour\n"
         "la même campagne — tu auras une nouvelle URL propre tout en gardant ton contenu.\n\n"
@@ -112,15 +118,18 @@ async def _guard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
 def _main_menu_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("📤 Nouvelle campagne", callback_data="menu:upload"),
+            InlineKeyboardButton("🔗 Générer un lien (campagne existante)", callback_data="menu:newlink"),
+        ],
+        [
             InlineKeyboardButton("📋 Mes campagnes", callback_data="menu:campaigns"),
+            InlineKeyboardButton("📤 Nouvelle campagne", callback_data="menu:upload"),
         ],
         [
-            InlineKeyboardButton("🔗 Générer un lien", callback_data="menu:newlink"),
             InlineKeyboardButton("🌐 Domaines", callback_data="menu:domains"),
+            InlineKeyboardButton("📊 Statistiques", callback_data="menu:stats"),
         ],
         [
-            InlineKeyboardButton("📊 Statistiques", callback_data="menu:stats"),
+            InlineKeyboardButton("🔐 URL Admin", callback_data="menu:admin"),
             InlineKeyboardButton("❓ Aide", callback_data="menu:help"),
         ],
     ])
@@ -217,6 +226,7 @@ async def callback_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     action = query.data.split(":", 1)[1] if ":" in query.data else ""
+    logger.info("Callback menu:%s from user %s", action, query.from_user.id)
 
     if action == "main":
         context.user_data.clear()
@@ -230,6 +240,10 @@ async def callback_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data[WAITING_FOR_ZIP] = True
         await query.edit_message_text(
             MESSAGES["upload_start"],
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("↩️ Plutôt générer un lien existant", callback_data="menu:newlink"),
+                InlineKeyboardButton("❌ Annuler", callback_data="menu:main"),
+            ]]),
             parse_mode=ParseMode.HTML,
         )
 
@@ -327,6 +341,19 @@ async def callback_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.HTML,
         )
 
+    elif action == "admin":
+        admin_url = f"{settings.PUBLIC_BASE_URL}{settings.ADMIN_PATH_PREFIX}/login"
+        msg = (
+            "🔐 <b>URL d'administration web</b>\n\n"
+            f"<code>{admin_url}</code>\n\n"
+            "⚠️ Garde cette URL privée. Ne la partage avec personne."
+        )
+        await query.edit_message_text(
+            msg,
+            reply_markup=_back_to_menu_keyboard(),
+            parse_mode=ParseMode.HTML,
+        )
+
 
 # ──────────────────────────────────────────────
 # Campaign callbacks
@@ -342,6 +369,7 @@ async def callback_campaign(update: Update, context: ContextTypes.DEFAULT_TYPE):
     parts = query.data.split(":", 2)
     action = parts[1] if len(parts) > 1 else ""
     param = parts[2] if len(parts) > 2 else ""
+    logger.info("Callback campaign:%s param=%s from user %s", action, param, query.from_user.id)
 
     if action == "detail":
         campaign_id = int(param)
@@ -445,6 +473,7 @@ async def callback_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     parts = query.data.split(":", 3)
     action = parts[1] if len(parts) > 1 else ""
+    logger.info("Callback link:%s from user %s", action, query.from_user.id)
 
     if action == "new":
         campaign_id = int(parts[2]) if len(parts) > 2 else 0
@@ -514,6 +543,7 @@ async def callback_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     parts = query.data.split(":", 2)
     action = parts[1] if len(parts) > 1 else ""
     campaign_id = int(parts[2]) if len(parts) > 2 else 0
+    logger.info("Callback stats:%s campaign_id=%s from user %s", action, campaign_id, query.from_user.id)
 
     if action == "show":
         db = SessionLocal()
@@ -879,6 +909,19 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         db.close()
 
 
+async def cmd_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Send the obfuscated admin URL to admins only."""
+    if not await _guard(update, context):
+        return
+    admin_url = f"{settings.PUBLIC_BASE_URL}{settings.ADMIN_PATH_PREFIX}/login"
+    await update.message.reply_html(
+        "🔐 <b>URL d'administration web</b>\n\n"
+        f"<code>{admin_url}</code>\n\n"
+        "⚠️ Garde cette URL privée. Ne la partage avec personne.",
+        reply_markup=_back_to_menu_keyboard(),
+    )
+
+
 # ──────────────────────────────────────────────
 # Build application
 # ──────────────────────────────────────────────
@@ -897,6 +940,7 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("menu", cmd_menu))
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("cancel", cmd_cancel))
+    app.add_handler(CommandHandler("admin", cmd_admin))
 
     # Legacy backward-compat command handlers
     app.add_handler(CommandHandler("upload", cmd_upload))
@@ -917,6 +961,25 @@ def build_application() -> Application:
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
 
     return app
+
+
+async def setup_bot_ui(bot: Bot) -> None:
+    """Configure bot commands list and menu button (called after bot starts)."""
+    try:
+        await bot.set_my_commands([
+            BotCommand("menu", "Ouvrir le menu principal"),
+            BotCommand("newlink", "Générer un nouveau lien"),
+            BotCommand("campaigns", "Voir mes campagnes"),
+            BotCommand("upload", "Uploader une nouvelle campagne"),
+            BotCommand("domains", "Voir mes domaines"),
+            BotCommand("stats", "Statistiques"),
+            BotCommand("admin", "URL du portail admin"),
+            BotCommand("help", "Aide"),
+        ])
+        await bot.set_chat_menu_button(menu_button=MenuButtonCommands())
+        logger.info("Bot commands and menu button configured.")
+    except Exception as exc:
+        logger.warning("Could not configure bot commands/menu button: %s", exc)
 
 
 async def set_bot_username(bot: Bot) -> None:

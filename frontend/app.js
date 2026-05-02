@@ -2,6 +2,8 @@
 let activeCampaignId = null;
 let domains = [];
 
+const ADMIN_PREFIX = window.ADMIN_PREFIX || '';
+
 /* ─── DOM refs ─── */
 const app            = document.getElementById('app');
 const logoutBtn      = document.getElementById('logout-btn');
@@ -31,7 +33,7 @@ const linksList       = document.getElementById('links-list');
   // Verify session is still valid; redirect to login if not
   const res = await apiFetch('/api/auth/me');
   if (!res.ok) {
-    window.location.href = '/login';
+    window.location.href = ADMIN_PREFIX + '/login';
     return;
   }
   const data = await res.json();
@@ -44,7 +46,7 @@ const linksList       = document.getElementById('links-list');
 /* ─── Logout ─── */
 logoutBtn.addEventListener('click', async () => {
   await apiFetch('/api/auth/logout', 'POST');
-  window.location.href = '/login';
+  window.location.href = ADMIN_PREFIX + '/login';
 });
 
 /* ─── Tabs ─── */
@@ -105,7 +107,7 @@ uploadBtn.addEventListener('click', async () => {
   fd.append('file', selectedFile);
   fd.append('name', name);
 
-  const res = await fetch('/api/upload', {
+  const res = await fetch(ADMIN_PREFIX + '/api/upload', {
     method: 'POST',
     credentials: 'include',
     body: fd,
@@ -329,7 +331,7 @@ function apiFetch(path, method = 'GET', body = null) {
     opts.headers['Content-Type'] = 'application/json';
     opts.body = JSON.stringify(body);
   }
-  return fetch(path, opts);
+  return fetch(ADMIN_PREFIX + path, opts);
 }
 
 /* ─── Bot Telegram tab ─── */
