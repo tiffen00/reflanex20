@@ -107,6 +107,14 @@ MESSAGES = {
     ),
 }
 
+MSG_CAMPAIGN_PROTECTED = (
+    "🔒 <b>Cette campagne est protégée et ne peut pas être supprimée.</b>\n\n"
+    "Tu peux toujours :\n"
+    "• Générer de nouveaux liens dessus\n"
+    "• Voir ses statistiques\n"
+    "• La désactiver lien par lien"
+)
+
 
 # ──────────────────────────────────────────────
 # Auth guard
@@ -164,7 +172,7 @@ def _campaigns_keyboard(
     return InlineKeyboardMarkup(buttons)
 
 
-def _campaign_detail_keyboard(campaign_id: int, has_versions: bool = False) -> InlineKeyboardMarkup:
+def _campaign_detail_keyboard(campaign_id: int, has_versions: bool = False, is_protected: bool = False) -> InlineKeyboardMarkup:
     buttons = [
         [InlineKeyboardButton("🔗 Nouveau lien", callback_data=f"link:new:{campaign_id}")],
         [InlineKeyboardButton("📊 Statistiques", callback_data=f"stats:show:{campaign_id}")],
@@ -172,7 +180,10 @@ def _campaign_detail_keyboard(campaign_id: int, has_versions: bool = False) -> I
     ]
     if has_versions:
         buttons.append([InlineKeyboardButton("🔄 Gérer les versions", callback_data=f"version:list:{campaign_id}")])
-    buttons.append([InlineKeyboardButton("🗑 Supprimer la campagne", callback_data=f"campaign:delete:{campaign_id}")])
+    if is_protected:
+        buttons.append([InlineKeyboardButton("🔒 Campagne protégée", callback_data="campaign:protected_info")])
+    else:
+        buttons.append([InlineKeyboardButton("🗑 Supprimer la campagne", callback_data=f"campaign:delete:{campaign_id}")])
     buttons.append([InlineKeyboardButton("◀ Retour", callback_data="menu:campaigns")])
     return InlineKeyboardMarkup(buttons)
 
@@ -561,12 +572,23 @@ async def callback_campaign(update: Update, context: ContextTypes.DEFAULT_TYPE):
             msg += "\nQue veux-tu faire ?"
             await query.edit_message_text(
                 msg,
-                reply_markup=_campaign_detail_keyboard(campaign_id, len(versions) > 1),
+                reply_markup=_campaign_detail_keyboard(
+                    campaign_id,
+                    len(versions) > 1,
+                    is_protected=bool(campaign.get("is_protected")),
+                ),
                 parse_mode=ParseMode.HTML,
             )
         except Exception as exc:
             logger.exception("campaign detail error: %s", exc)
             await query.edit_message_text(f"⚠️ Erreur.\nDétail : {exc}", reply_markup=_back_to_menu_keyboard())
+
+    elif action == "protected_info":
+        await query.edit_message_text(
+            MSG_CAMPAIGN_PROTECTED,
+            reply_markup=_back_to_menu_keyboard(),
+            parse_mode=ParseMode.HTML,
+        )
 
     elif action == "delete":
         campaign_id = int(param)
@@ -574,6 +596,16 @@ async def callback_campaign(update: Update, context: ContextTypes.DEFAULT_TYPE):
             campaign = dao.get_campaign(campaign_id)
             if not campaign:
                 await query.edit_message_text("❌ Campagne introuvable.", reply_markup=_back_to_menu_keyboard())
+                return
+            if campaign.get("is_protected"):
+                await query.edit_message_text(
+                    MSG_CAMPAIGN_PROTECTED,
+                    reply_markup=_campaign_detail_keyboard(
+                        campaign_id,
+                        is_protected=True,
+                    ),
+                    parse_mode=ParseMode.HTML,
+                )
                 return
             links = dao.list_links_for_campaign(campaign_id)
             active_links = sum(1 for l in links if l.get("is_active"))
@@ -604,6 +636,16 @@ async def callback_campaign(update: Update, context: ContextTypes.DEFAULT_TYPE):
             campaign = dao.get_campaign(campaign_id)
             if not campaign:
                 await query.edit_message_text("❌ Campagne introuvable.", reply_markup=_back_to_menu_keyboard())
+                return
+            if campaign.get("is_protected"):
+                await query.edit_message_text(
+                    MSG_CAMPAIGN_PROTECTED,
+                    reply_markup=_campaign_detail_keyboard(
+                        campaign_id,
+                        is_protected=True,
+                    ),
+                    parse_mode=ParseMode.HTML,
+                )
                 return
             name = campaign["name"]
             storage_path = campaign.get("storage_path", "")
