@@ -433,7 +433,6 @@ def get_bot_hits_stats(hours: int = 24) -> dict:
             logger.error("get_bot_hits_stats error: %s", e)
 
     # In-memory fallback
-    from datetime import timedelta as _td
     cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
     rows = [
         r for r in _bot_hits_memory

@@ -273,8 +273,7 @@ async def _log_bot_hit_async(request: Request, slug: str, detection) -> None:
         )
         country: Optional[str] = None
         try:
-            from backend.geoip import lookup_country as _lookup
-            country = await _lookup(ip)
+            country = await lookup_country(ip)
         except Exception:
             pass
         link = dao.get_link_by_slug(slug)

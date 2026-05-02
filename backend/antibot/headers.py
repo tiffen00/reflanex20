@@ -20,7 +20,9 @@ def score_headers(headers: Headers) -> int:
         score += 2
 
     accept = headers.get("accept", "")
-    if not accept or accept.strip() == "*/*":
+    # Only flag if Accept is completely absent (not just */*)
+    # since */⁠* is a valid Accept value for many legitimate clients
+    if not accept:
         score += 1
 
     accept_enc = headers.get("accept-encoding", "")

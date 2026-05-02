@@ -85,16 +85,8 @@ def detect_bot(request: Request, protection_level: str = "standard") -> BotDetec
         if antibot_rate_limiter.is_rate_limited(ip):
             return BotDetection(True, "rate_limit", 100)
 
-    # 5. HTTP method
-    if request.method not in ("GET", "HEAD"):
-        # HEAD is allowed since some browsers/proxies use it;
-        # only block non-GET/HEAD methods on campaign routes
-        pass
-
-    if request.method not in ("GET",):
-        # We only allow GET on campaign content routes;
-        # HEAD is suspicious on campaign routes (scanners)
-        if request.method == "HEAD":
-            return BotDetection(True, f"non_get_method:{request.method}", 100)
+    # 5. HTTP method — HEAD is a scanner signal on campaign content routes
+    if request.method == "HEAD":
+        return BotDetection(True, f"non_get_method:{request.method}", 100)
 
     return BotDetection(False, None, score)
