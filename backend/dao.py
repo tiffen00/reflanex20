@@ -32,9 +32,17 @@ def get_campaign(id: int) -> dict | None:
 
 
 def get_campaign_by_name(name: str) -> dict | None:
+    """Return the latest version (by version number) for a given campaign name."""
     try:
         sb = get_supabase()
-        result = sb.table("campaigns").select("*").eq("name", name).eq("is_current", True).execute()
+        result = (
+            sb.table("campaigns")
+            .select("*")
+            .eq("name", name)
+            .order("version", desc=True)
+            .limit(1)
+            .execute()
+        )
         return result.data[0] if result.data else None
     except Exception as e:
         logger.error("get_campaign_by_name error: %s", e)
@@ -306,3 +314,30 @@ def mark_alert_notified(alert_id: int) -> None:
         sb.table("click_alerts").update({"notified": True}).eq("id", alert_id).execute()
     except Exception as e:
         logger.error("mark_alert_notified error: %s", e)
+
+
+# ──────────────────────────────────────────────
+# Helpers for direct field updates
+# ──────────────────────────────────────────────
+
+def migrate_links_to_campaign(link_ids: list[int], new_campaign_id: int) -> None:
+    """Reassign a list of links to a new campaign (used during versioning)."""
+    if not link_ids:
+        return
+    try:
+        sb = get_supabase()
+        for link_id in link_ids:
+            sb.table("links").update({"campaign_id": new_campaign_id}).eq("id", link_id).execute()
+    except Exception as e:
+        logger.error("migrate_links_to_campaign error: %s", e)
+        raise
+
+
+def update_link_domain(slug: str, domain: str) -> None:
+    """Update the custom domain of a link identified by slug."""
+    try:
+        sb = get_supabase()
+        sb.table("links").update({"domain": domain}).eq("slug", slug).execute()
+    except Exception as e:
+        logger.error("update_link_domain error: %s", e)
+        raise

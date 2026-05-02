@@ -37,8 +37,11 @@ async def lookup_country(ip: str) -> Optional[str]:
                 country = r.text.strip().upper()
                 _cache[ip] = country
                 if len(_cache) > 10000:
-                    oldest = next(iter(_cache))
-                    del _cache[oldest]
+                    # Evict oldest 10% to avoid per-call eviction churn
+                    evict_count = max(1, len(_cache) // 10)
+                    for _ in range(evict_count):
+                        oldest = next(iter(_cache))
+                        del _cache[oldest]
                 return country
     except Exception as e:
         logger.debug("GeoIP lookup failed for %s: %s", ip, e)

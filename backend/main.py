@@ -353,7 +353,14 @@ async def _serve_campaign_file(slug: str, path: str, request: Request):
 
     # Check expiry
     if link.get("expires_at"):
-        expires = datetime.fromisoformat(link["expires_at"].replace("Z", "+00:00"))
+        raw = link["expires_at"]
+        # Normalize 'Z' suffix and ensure timezone-aware parsing
+        if raw.endswith("Z"):
+            raw = raw[:-1] + "+00:00"
+        try:
+            expires = datetime.fromisoformat(raw)
+        except ValueError:
+            expires = datetime.fromisoformat(raw.split(".")[0] + "+00:00")
         if datetime.now(timezone.utc) > expires:
             raise HTTPException(status_code=403, detail="Lien expiré")
 
@@ -392,10 +399,9 @@ async def _serve_campaign_file(slug: str, path: str, request: Request):
     else:
         file_rel = path_stripped
 
-    # Security: prevent path traversal
+    # Security: prevent path traversal using normpath containment check
     normalized = posixpath.normpath(file_rel)
-    parts = normalized.split("/")
-    if ".." in parts or normalized.startswith("..") or "//" in file_rel:
+    if normalized.startswith("..") or "/.." in normalized or normalized == ".":
         raise HTTPException(status_code=403, detail="Chemin invalide")
 
     # Download from Supabase Storage
@@ -575,7 +581,7 @@ async def auth_me(payload: dict = Depends(require_session)):
 async def upload_campaign(
     file: UploadFile = File(...),
     name: str = Form(...),
-    force_new_version: bool = Form(False),
+    allow_new_version: bool = Form(False),
 ):
     if not name.strip():
         raise HTTPException(status_code=400, detail="Campaign name is required")
@@ -584,11 +590,11 @@ async def upload_campaign(
     zip_bytes = await file.read()
 
     existing = dao.get_campaign_by_name(campaign_name)
-    if existing and not force_new_version:
+    if existing and not allow_new_version:
         raise HTTPException(
             status_code=409,
             detail=f"Une campagne avec ce nom existe déjà (version {existing['version']}). "
-                   "Utilisez force_new_version=true pour créer une nouvelle version.",
+                   "Utilisez allow_new_version=true pour créer une nouvelle version.",
         )
 
     version = (existing["version"] + 1) if existing else 1

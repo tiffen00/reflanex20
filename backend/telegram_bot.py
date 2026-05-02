@@ -865,12 +865,9 @@ async def callback_version(update: Update, context: ContextTypes.DEFAULT_TYPE):
             storage_path, entry_file = storage_sb.upload_campaign(zip_bytes, slug_dir, new_version)
             new_campaign = dao.create_campaign(name, storage_path, entry_file, filename, version=new_version)
 
-            # Migrate active links to new campaign
+            # Migrate active links to new campaign version
             old_links = dao.list_links_for_campaign(existing_id)
-            from backend.db import get_supabase as _get_sb
-            _sb = _get_sb()
-            for link in old_links:
-                _sb.table("links").update({"campaign_id": new_campaign["id"]}).eq("id", link["id"]).execute()
+            dao.migrate_links_to_campaign([lnk["id"] for lnk in old_links], new_campaign["id"])
 
             dao.set_current_version(new_campaign["id"])
 
@@ -1203,8 +1200,7 @@ async def cmd_setdomain(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not link:
         await update.message.reply_text(f"❌ Lien {slug} introuvable.")
         return
-    from backend.db import get_supabase as _get_sb
-    _get_sb().table("links").update({"domain": domain}).eq("slug", slug).execute()
+    dao.update_link_domain(slug, domain)
     full_url = _make_full_url(slug, domain)
     await update.message.reply_html(f"✅ Domaine mis à jour.\n🔗 <code>{full_url}</code>")
 
