@@ -56,6 +56,7 @@ tabs.forEach(tab => {
     const id = 'tab-' + tab.dataset.tab;
     document.getElementById(id).classList.remove('hidden');
     if (tab.dataset.tab === 'campaigns') loadCampaigns();
+    if (tab.dataset.tab === 'bot') loadBotStatus();
   });
 });
 
@@ -220,12 +221,15 @@ async function loadDomains() {
   const res = await apiFetch('/api/domains');
   if (!res.ok) return;
   const data = await res.json();
-  domains = data.domains || [];
-  domainSelect.innerHTML = '<option value="">URL par défaut</option>';
-  domains.forEach(d => {
+  // Support both new structure (array of objects) and legacy (array of strings)
+  const rawDomains = data.domains || [];
+  domains = rawDomains.map(d => typeof d === 'string' ? { domain: d, is_default: false } : d);
+  domainSelect.innerHTML = '';
+  domains.forEach((d, i) => {
     const o = document.createElement('option');
-    o.value = d;
-    o.textContent = d;
+    o.value = d.domain;
+    o.textContent = d.is_default ? `🌟 ${d.domain} (par défaut)` : d.domain;
+    if (i === 0) o.selected = true;
     domainSelect.appendChild(o);
   });
 }
@@ -233,8 +237,8 @@ async function loadDomains() {
 generateLinkBtn.addEventListener('click', async () => {
   if (!activeCampaignId) return;
   generateLinkBtn.disabled = true;
-  const domain = domainSelect.value || null;
-  const body = domain ? { domain } : {};
+  const selectedDomain = domainSelect.value || null;
+  const body = selectedDomain ? { domain: selectedDomain } : {};
   const res = await apiFetch(`/api/campaigns/${activeCampaignId}/links`, 'POST', body);
   generateLinkBtn.disabled = false;
   if (res.ok) {
@@ -326,6 +330,85 @@ function apiFetch(path, method = 'GET', body = null) {
     opts.body = JSON.stringify(body);
   }
   return fetch(path, opts);
+}
+
+/* ─── Bot Telegram tab ─── */
+async function loadBotStatus() {
+  const badge = document.getElementById('bot-status-badge');
+  const details = document.getElementById('bot-status-details');
+  const configDetails = document.getElementById('bot-config-details');
+  if (!badge || !details) return;
+
+  badge.textContent = 'Chargement…';
+  badge.className = 'bot-badge bot-badge-loading';
+
+  const res = await apiFetch('/api/bot/status');
+  if (!res.ok) {
+    badge.textContent = 'Erreur';
+    badge.className = 'bot-badge bot-badge-error';
+    details.innerHTML = '<p class="error">Impossible de récupérer le statut du bot.</p>';
+    return;
+  }
+
+  const data = await res.json();
+  if (data.configured) {
+    badge.textContent = '🟢 Configuré';
+    badge.className = 'bot-badge bot-badge-ok';
+    const username = data.username ? `<a href="https://t.me/${data.username.replace('@','')}" target="_blank" rel="noopener" class="bot-link">${esc(data.username)}</a>` : '<span class="text-muted">—</span>';
+    details.innerHTML = `
+      <div class="bot-status-grid">
+        <div class="bot-status-item"><span class="bot-status-label">Nom d'utilisateur</span><span>${username}</span></div>
+        <div class="bot-status-item"><span class="bot-status-label">Admins configurés</span><span>${data.admin_ids_count}</span></div>
+      </div>
+    `;
+  } else {
+    badge.textContent = '🔴 Non configuré';
+    badge.className = 'bot-badge bot-badge-error';
+    details.innerHTML = `
+      <p class="error">Le bot n'est pas configuré ou n'a pas démarré.</p>
+      <p class="text-muted">Vérifie les variables <code>TELEGRAM_BOT_TOKEN</code> et <code>TELEGRAM_ADMIN_IDS</code> sur Render.</p>
+    `;
+  }
+
+  if (configDetails) {
+    configDetails.innerHTML = `
+      <div class="bot-status-grid">
+        <div class="bot-status-item">
+          <span class="bot-status-label">Admins configurés</span>
+          <span>${data.admin_ids_count} admin${data.admin_ids_count !== 1 ? 's' : ''}</span>
+        </div>
+      </div>
+    `;
+  }
+}
+
+const botTestBtn = document.getElementById('bot-test-btn');
+const botTestResult = document.getElementById('bot-test-result');
+
+if (botTestBtn) {
+  botTestBtn.addEventListener('click', async () => {
+    botTestBtn.disabled = true;
+    botTestBtn.textContent = '⏳ Envoi…';
+    if (botTestResult) {
+      botTestResult.classList.add('hidden');
+      botTestResult.className = 'bot-test-result hidden';
+    }
+
+    const res = await apiFetch('/api/bot/test', 'POST');
+    botTestBtn.disabled = false;
+    botTestBtn.textContent = '📨 Envoyer un message test';
+
+    if (!botTestResult) return;
+    const data = await res.json().catch(() => ({}));
+    botTestResult.classList.remove('hidden');
+    if (res.ok && data.success) {
+      botTestResult.className = 'bot-test-result bot-test-ok';
+      botTestResult.textContent = `✅ Message envoyé à ${data.sent_to} admin${data.sent_to !== 1 ? 's' : ''} !`;
+    } else {
+      botTestResult.className = 'bot-test-result bot-test-error';
+      botTestResult.textContent = `❌ ${data.error || 'Erreur lors de l\'envoi.'}`;
+    }
+  });
 }
 
 /* ─── Utils ─── */

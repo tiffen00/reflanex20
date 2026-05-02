@@ -1,6 +1,7 @@
 import secrets
 import logging
 from typing import List, Optional
+from urllib.parse import urlparse
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 logger = logging.getLogger(__name__)
@@ -29,6 +30,22 @@ class Settings(BaseSettings):
         if not self.DOMAINS:
             return []
         return [d.strip() for d in self.DOMAINS.split(",") if d.strip()]
+
+    def get_public_hostname(self) -> str:
+        """Returns the hostname extracted from PUBLIC_BASE_URL."""
+        parsed = urlparse(self.PUBLIC_BASE_URL)
+        return parsed.hostname or parsed.netloc or "localhost"
+
+    def get_all_domains(self) -> List[dict]:
+        """Returns all domains including PUBLIC_BASE_URL as the first/default entry."""
+        public_hostname = self.get_public_hostname()
+        result: List[dict] = [
+            {"domain": public_hostname, "is_default": True, "label": "Domaine public Render"}
+        ]
+        for d in self.get_domains():
+            if d != public_hostname:
+                result.append({"domain": d, "is_default": False, "label": None})
+        return result
 
     def get_admin_ids(self) -> List[int]:
         if not self.TELEGRAM_ADMIN_IDS:

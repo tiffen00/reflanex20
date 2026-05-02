@@ -28,6 +28,7 @@
       <div class="tabs-container">
         <button class="nav-tab active" data-tab="upload">Nouvelle campagne</button>
         <button class="nav-tab" data-tab="campaigns">Mes campagnes</button>
+        <button class="nav-tab" data-tab="bot">🤖 Bot Telegram</button>
       </div>
     </div>
 
@@ -81,6 +82,134 @@
         </div>
         <div id="links-list"></div>
       </div>
+    </section>
+
+    <!-- Bot Telegram tab -->
+    <section id="tab-bot" class="tab-content hidden">
+
+      <!-- Status card -->
+      <div class="card bot-status-card">
+        <div class="bot-card-header">
+          <h2>📡 Statut du bot</h2>
+          <div id="bot-status-badge" class="bot-badge bot-badge-loading">Chargement…</div>
+        </div>
+        <div id="bot-status-details" class="bot-status-details">
+          <p class="text-muted">Récupération du statut…</p>
+        </div>
+        <div class="bot-actions">
+          <button id="bot-test-btn" class="btn btn-primary">📨 Envoyer un message test</button>
+          <div id="bot-test-result" class="bot-test-result hidden"></div>
+        </div>
+      </div>
+
+      <!-- Commands list -->
+      <div class="card">
+        <h2>📚 Commandes disponibles</h2>
+        <p class="text-muted bot-subtitle">Tout se fait via les boutons du bot — pas besoin de mémoriser de commandes !</p>
+
+        <div class="bot-commands-section">
+          <h3>🚀 Démarrage</h3>
+          <div class="bot-commands-list">
+            <div class="bot-command-item">
+              <span class="bot-command-tag">/start</span>
+              <span class="bot-command-desc">Affiche le menu principal avec boutons interactifs</span>
+            </div>
+            <div class="bot-command-item">
+              <span class="bot-command-tag">/menu</span>
+              <span class="bot-command-desc">Réaffiche le menu principal (même chose que /start)</span>
+            </div>
+            <div class="bot-command-item">
+              <span class="bot-command-tag">/help</span>
+              <span class="bot-command-desc">Affiche l'aide détaillée avec exemples</span>
+            </div>
+            <div class="bot-command-item">
+              <span class="bot-command-tag">/cancel</span>
+              <span class="bot-command-desc">Annule l'action en cours et retourne au menu</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="bot-commands-section">
+          <h3>📁 Campagnes</h3>
+          <div class="bot-commands-list">
+            <div class="bot-command-item">
+              <span class="bot-command-tag">📤 Nouvelle campagne</span>
+              <span class="bot-command-desc">Guide pas-à-pas pour uploader un zip (HTML, PHP, images…)</span>
+            </div>
+            <div class="bot-command-item">
+              <span class="bot-command-tag">📋 Mes campagnes</span>
+              <span class="bot-command-desc">Liste tes campagnes avec détails et actions</span>
+            </div>
+            <div class="bot-command-item">
+              <span class="bot-command-tag">📊 Statistiques</span>
+              <span class="bot-command-desc">Nombre de clics par lien, liens actifs/désactivés</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="bot-commands-section">
+          <h3>🔗 Liens</h3>
+          <div class="bot-commands-list">
+            <div class="bot-command-item">
+              <span class="bot-command-tag">🔗 Générer un lien</span>
+              <span class="bot-command-desc">Crée un nouveau lien court pour une campagne, avec choix du domaine</span>
+            </div>
+            <div class="bot-command-item">
+              <span class="bot-command-desc bot-tip">💡 <strong>Astuce rotation anti-blacklist :</strong> si un lien est cramé (bloqué par les plateformes), génère un nouveau slug — même contenu, nouvelle URL propre !</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="bot-commands-section">
+          <h3>🌐 Domaines</h3>
+          <div class="bot-commands-list">
+            <div class="bot-command-item">
+              <span class="bot-command-tag">🌐 Domaines</span>
+              <span class="bot-command-desc">Liste les domaines disponibles pour tes liens (dont le domaine public Render)</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Configuration -->
+      <div class="card">
+        <h2>⚙️ Configuration</h2>
+        <div id="bot-config-details">
+          <p class="text-muted">Chargement…</p>
+        </div>
+        <div class="bot-config-info">
+          <p class="bot-config-note">
+            🔍 <strong>Trouver ton ID Telegram :</strong>
+            Envoie un message à
+            <a href="https://t.me/userinfobot" target="_blank" rel="noopener" class="bot-link">@userinfobot</a>
+            et il te donnera ton ID.
+          </p>
+          <p class="bot-config-note">
+            ➕ <strong>Ajouter un admin :</strong>
+            Ajoute son ID Telegram dans la variable <code>TELEGRAM_ADMIN_IDS</code> sur Render (séparés par virgule) et redéploie.
+          </p>
+        </div>
+      </div>
+
+      <!-- Troubleshooting -->
+      <div class="card">
+        <h2>🆘 Dépannage</h2>
+        <div class="bot-troubleshoot">
+          <h3>Le bot ne répond pas ?</h3>
+          <ul class="bot-checklist">
+            <li>✅ <code>TELEGRAM_BOT_TOKEN</code> est bien configuré sur Render ?</li>
+            <li>✅ <code>TELEGRAM_ADMIN_IDS</code> contient bien ton ID Telegram ?</li>
+            <li>✅ Le service Render est démarré (vérifie le statut "Live") ?</li>
+            <li>✅ Tu as bien envoyé <code>/start</code> au bot au moins une fois ?</li>
+            <li>✅ Le token n'est pas révoqué ? (Recrée-le avec @BotFather si besoin)</li>
+          </ul>
+          <p class="bot-config-note">
+            📋 <strong>Voir les logs :</strong>
+            Va sur Render → ton service → <strong>Logs</strong> pour voir les erreurs en détail.
+          </p>
+        </div>
+      </div>
+
     </section>
 
   </div>
