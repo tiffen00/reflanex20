@@ -3,23 +3,36 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Reflanex20 — Campaign Manager</title>
+  <title>Reflanex — Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
+
   <!-- Main app -->
   <div id="app">
-    <nav class="navbar">
-      <span class="nav-logo">🔗 Reflanex20</span>
-      <div class="nav-tabs">
-        <button class="nav-tab active" data-tab="upload">📤 Upload</button>
-        <button class="nav-tab" data-tab="campaigns">📋 Campagnes</button>
+
+    <!-- Header -->
+    <header class="app-header">
+      <a href="/" class="app-logo">Reflanex</a>
+      <nav class="app-nav">
+        <span id="user-name" class="user-name"></span>
+        <button id="logout-btn" class="btn btn-outline btn-pill">Déconnexion</button>
+      </nav>
+    </header>
+
+    <!-- Tabs navigation -->
+    <div class="tabs-bar">
+      <div class="tabs-container">
+        <button class="nav-tab active" data-tab="upload">Nouvelle campagne</button>
+        <button class="nav-tab" data-tab="campaigns">Mes campagnes</button>
       </div>
-      <button id="logout-btn" class="btn-ghost">Déconnexion</button>
-    </nav>
+    </div>
 
     <!-- Upload tab -->
-    <section id="tab-upload" class="tab-content active">
+    <section id="tab-upload" class="tab-content">
       <div class="card">
         <h2>Nouvelle campagne</h2>
         <div class="form-group">
@@ -39,7 +52,7 @@
           <input type="file" id="file-input" accept=".zip" hidden />
         </div>
         <div id="file-info" class="file-info hidden"></div>
-        <button id="upload-btn" class="btn-primary" disabled>Uploader</button>
+        <button id="upload-btn" class="btn btn-primary btn-pill" disabled>Uploader</button>
         <div id="upload-result" class="result hidden"></div>
       </div>
     </section>
@@ -48,8 +61,8 @@
     <section id="tab-campaigns" class="tab-content hidden">
       <div class="card">
         <div class="section-header">
-          <h2>Campagnes</h2>
-          <button id="refresh-btn" class="btn-ghost">🔄 Actualiser</button>
+          <h2>Mes campagnes</h2>
+          <button id="refresh-btn" class="btn btn-ghost btn-sm">🔄 Actualiser</button>
         </div>
         <div id="campaigns-list"></div>
       </div>
@@ -58,17 +71,18 @@
       <div id="links-panel" class="card hidden">
         <div class="section-header">
           <h2 id="links-title">Liens</h2>
-          <button id="close-links-btn" class="btn-ghost">✕ Fermer</button>
+          <button id="close-links-btn" class="btn btn-ghost btn-sm">✕ Fermer</button>
         </div>
         <div id="new-link-form" class="form-inline">
           <select id="domain-select">
             <option value="">URL par défaut</option>
           </select>
-          <button id="generate-link-btn" class="btn-primary">+ Nouveau lien</button>
+          <button id="generate-link-btn" class="btn btn-primary btn-pill">+ Nouveau lien</button>
         </div>
         <div id="links-list"></div>
       </div>
     </section>
+
   </div>
 
   <script src="/static/app.js"></script>

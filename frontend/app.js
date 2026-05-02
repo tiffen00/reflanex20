@@ -34,6 +34,9 @@ const linksList       = document.getElementById('links-list');
     window.location.href = '/login';
     return;
   }
+  const data = await res.json();
+  const userNameEl = document.getElementById('user-name');
+  if (userNameEl && data.username) userNameEl.textContent = data.username;
   loadDomains();
   loadCampaigns();
 })();
