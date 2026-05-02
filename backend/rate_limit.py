@@ -37,14 +37,15 @@ class RateLimiter:
         return True
 
     def retry_after(self, ip: str) -> int:
-        """Seconds until the oldest entry falls out of the window."""
+        """Seconds until the oldest entry in the window expires."""
         now = time.monotonic()
         window_start = now - _WINDOW_SECONDS
         hits = self._hits.get(ip, deque())
         # Find the oldest hit still in the window
         for ts in hits:
             if ts >= window_start:
-                return max(1, int(ts - window_start) + 1)
+                # This hit expires at ts + _WINDOW_SECONDS
+                return max(1, int(ts + _WINDOW_SECONDS - now) + 1)
         return 1
 
 

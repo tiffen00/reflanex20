@@ -25,7 +25,7 @@ form.addEventListener('submit', async e => {
 
     if (res.status === 429) {
       const retryAfter = res.headers.get('Retry-After') || '900';
-      const minutes = Math.ceil(parseInt(retryAfter) / 60);
+      const minutes = Math.ceil(parseInt(retryAfter, 10) / 60);
       rateLimitMsg.textContent = `Trop de tentatives. Réessayez dans ${minutes} minute(s).`;
       rateLimitMsg.classList.remove('hidden');
       return;
@@ -40,6 +40,7 @@ form.addEventListener('submit', async e => {
     }
 
     // Redirect to OTP page with challenge_id
+    sessionStorage.setItem('otpExpiresIn', data.expires_in || 300);
     window.location.href = `/login/otp?challenge=${encodeURIComponent(data.challenge_id)}`;
   } catch (err) {
     loginError.textContent = 'Erreur réseau. Réessayez.';

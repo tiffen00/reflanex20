@@ -343,7 +343,7 @@ async def auth_verify_otp(body: VerifyOTPBody, request: Request):
 
     result = otp_store.verify(body.challenge_id, body.code)
 
-    if result.status == "not_found" or result.status == "consumed" or result.status == "expired":
+    if result.status in ("not_found", "consumed", "expired"):
         return JSONResponse({"detail": "OTP expired or not found. Please log in again."}, status_code=410)
 
     if result.status == "exhausted":

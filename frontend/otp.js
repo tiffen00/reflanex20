@@ -14,7 +14,7 @@ const backLink    = document.getElementById('back-link');
 const countdownEl = document.getElementById('countdown');
 
 /* ─── Countdown ─── */
-const OTP_TTL = 5 * 60; // 5 minutes in seconds
+const OTP_TTL = parseInt(sessionStorage.getItem('otpExpiresIn') || '300', 10);
 let secondsLeft = OTP_TTL;
 
 function updateCountdown() {
@@ -155,8 +155,10 @@ async function submitOTP(code) {
   } catch (err) {
     otpError.textContent = 'Erreur réseau. Réessayez.';
     otpError.classList.remove('hidden');
+    // Re-enable the button so the user can retry
+    validateBtn.disabled = false;
   } finally {
-    if (!validateBtn.disabled && validateBtn.textContent === '⏳ Validation…') {
+    if (validateBtn.textContent === '⏳ Validation…') {
       validateBtn.textContent = 'Valider';
     }
   }
