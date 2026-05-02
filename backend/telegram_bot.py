@@ -23,26 +23,28 @@ from telegram.ext import (
 
 from backend.auth import is_telegram_admin
 from backend.config import settings
-from backend.database import Campaign, Link, SessionLocal
-from backend.storage import StorageError, validate_and_unzip
+import backend.dao as dao
+from backend.storage import StorageError
+import backend.storage_supabase as storage_sb
 from backend.utils import generate_slug, slugify
 
 logger = logging.getLogger(__name__)
 
-# Module-level bot instance and username set once the application is built
 _bot_instance: Optional[Bot] = None
 _bot_username: Optional[str] = None
 
 # States stored in context.user_data
 WAITING_FOR_ZIP = "waiting_for_zip"
 PENDING_CAMPAIGN_ID = "pending_campaign_id"
+WAITING_FOR_GEO_COUNTRIES = "waiting_for_geo_countries"
+WAITING_FOR_ALERT_THRESHOLD = "waiting_for_alert_threshold"
 
 
 def _admin_url() -> str:
-    """Return the full admin login URL, avoiding double slashes."""
     base = settings.PUBLIC_BASE_URL.rstrip("/")
     prefix = settings.ADMIN_PATH_PREFIX.rstrip("/")
     return f"{base}{prefix}/login"
+
 
 # ──────────────────────────────────────────────
 # Centralized message texts
@@ -124,9 +126,7 @@ async def _guard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
 
 def _main_menu_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("🔗 Générer un lien (campagne existante)", callback_data="menu:newlink"),
-        ],
+        [InlineKeyboardButton("🔗 Générer un lien (campagne existante)", callback_data="menu:newlink")],
         [
             InlineKeyboardButton("📋 Mes campagnes", callback_data="menu:campaigns"),
             InlineKeyboardButton("📤 Nouvelle campagne", callback_data="menu:upload"),
@@ -143,28 +143,35 @@ def _main_menu_keyboard() -> InlineKeyboardMarkup:
 
 
 def _back_to_menu_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("◀ Menu principal", callback_data="menu:main")]
-    ])
+    return InlineKeyboardMarkup([[InlineKeyboardButton("◀ Menu principal", callback_data="menu:main")]])
 
 
-def _campaigns_keyboard(campaigns, callback_prefix: str = "campaign:detail") -> InlineKeyboardMarkup:
+def _campaigns_keyboard(
+    campaigns: list[dict],
+    links_by_campaign: dict[int, list[dict]],
+    callback_prefix: str = "campaign:detail",
+) -> InlineKeyboardMarkup:
     buttons = []
     for c in campaigns:
-        active_links = sum(1 for l in c.links if l.is_active)
-        label = f"📁 {c.name} ({active_links} lien{'s' if active_links != 1 else ''})"
-        buttons.append([InlineKeyboardButton(label, callback_data=f"{callback_prefix}:{c.id}")])
+        links = links_by_campaign.get(c["id"], [])
+        active_links = sum(1 for l in links if l.get("is_active"))
+        label = f"📁 {c['name']} ({active_links} lien{'s' if active_links != 1 else ''})"
+        buttons.append([InlineKeyboardButton(label, callback_data=f"{callback_prefix}:{c['id']}")])
     buttons.append([InlineKeyboardButton("◀ Menu principal", callback_data="menu:main")])
     return InlineKeyboardMarkup(buttons)
 
 
-def _campaign_detail_keyboard(campaign_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
+def _campaign_detail_keyboard(campaign_id: int, has_versions: bool = False) -> InlineKeyboardMarkup:
+    buttons = [
         [InlineKeyboardButton("🔗 Nouveau lien", callback_data=f"link:new:{campaign_id}")],
         [InlineKeyboardButton("📊 Statistiques", callback_data=f"stats:show:{campaign_id}")],
-        [InlineKeyboardButton("🗑 Supprimer la campagne", callback_data=f"campaign:delete:{campaign_id}")],
-        [InlineKeyboardButton("◀ Retour", callback_data="menu:campaigns")],
-    ])
+        [InlineKeyboardButton("📊 Graph 7 jours", callback_data=f"graph:campaign:{campaign_id}")],
+    ]
+    if has_versions:
+        buttons.append([InlineKeyboardButton("🔄 Gérer les versions", callback_data=f"version:list:{campaign_id}")])
+    buttons.append([InlineKeyboardButton("🗑 Supprimer la campagne", callback_data=f"campaign:delete:{campaign_id}")])
+    buttons.append([InlineKeyboardButton("◀ Retour", callback_data="menu:campaigns")])
+    return InlineKeyboardMarkup(buttons)
 
 
 def _domain_keyboard(campaign_id: int) -> InlineKeyboardMarkup:
@@ -179,36 +186,27 @@ def _domain_keyboard(campaign_id: int) -> InlineKeyboardMarkup:
 
 
 # ──────────────────────────────────────────────
-# /start  /menu  (and backward compat /help)
+# /start  /menu  /help  /cancel
 # ──────────────────────────────────────────────
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await _guard(update, context):
         return
     context.user_data.clear()
-    await update.message.reply_html(
-        MESSAGES["main_menu"],
-        reply_markup=_main_menu_keyboard(),
-    )
+    await update.message.reply_html(MESSAGES["main_menu"], reply_markup=_main_menu_keyboard())
 
 
 async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await _guard(update, context):
         return
     context.user_data.clear()
-    await update.message.reply_html(
-        MESSAGES["main_menu"],
-        reply_markup=_main_menu_keyboard(),
-    )
+    await update.message.reply_html(MESSAGES["main_menu"], reply_markup=_main_menu_keyboard())
 
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await _guard(update, context):
         return
-    await update.message.reply_html(
-        MESSAGES["help"],
-        reply_markup=_back_to_menu_keyboard(),
-    )
+    await update.message.reply_html(MESSAGES["help"], reply_markup=_back_to_menu_keyboard())
 
 
 async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -255,48 +253,50 @@ async def callback_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     elif action == "campaigns":
-        db = SessionLocal()
         try:
-            campaigns = db.query(Campaign).all()
-        finally:
-            db.close()
-        if not campaigns:
+            campaigns = dao.list_campaigns()
+            if not campaigns:
+                await query.edit_message_text(
+                    MESSAGES["no_campaigns"],
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton("📤 Uploader", callback_data="menu:upload"),
+                        InlineKeyboardButton("◀ Menu", callback_data="menu:main"),
+                    ]]),
+                    parse_mode=ParseMode.HTML,
+                )
+                return
+            links_by_campaign = {c["id"]: dao.list_links_for_campaign(c["id"]) for c in campaigns}
             await query.edit_message_text(
-                MESSAGES["no_campaigns"],
-                reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton("📤 Uploader", callback_data="menu:upload"),
-                    InlineKeyboardButton("◀ Menu", callback_data="menu:main"),
-                ]]),
+                f"📋 <b>Tes campagnes ({len(campaigns)})</b>\n\nClique sur une campagne pour voir ses détails et liens :",
+                reply_markup=_campaigns_keyboard(campaigns, links_by_campaign),
                 parse_mode=ParseMode.HTML,
             )
-            return
-        await query.edit_message_text(
-            f"📋 <b>Tes campagnes ({len(campaigns)})</b>\n\nClique sur une campagne pour voir ses détails et liens :",
-            reply_markup=_campaigns_keyboard(campaigns),
-            parse_mode=ParseMode.HTML,
-        )
+        except Exception as exc:
+            logger.exception("campaigns error: %s", exc)
+            await query.edit_message_text(f"⚠️ Erreur.\nDétail : {exc}", reply_markup=_back_to_menu_keyboard())
 
     elif action == "newlink":
-        db = SessionLocal()
         try:
-            campaigns = db.query(Campaign).all()
-        finally:
-            db.close()
-        if not campaigns:
+            campaigns = dao.list_campaigns()
+            if not campaigns:
+                await query.edit_message_text(
+                    MESSAGES["no_campaigns"],
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton("📤 Uploader", callback_data="menu:upload"),
+                        InlineKeyboardButton("◀ Menu", callback_data="menu:main"),
+                    ]]),
+                    parse_mode=ParseMode.HTML,
+                )
+                return
+            links_by_campaign = {c["id"]: dao.list_links_for_campaign(c["id"]) for c in campaigns}
             await query.edit_message_text(
-                MESSAGES["no_campaigns"],
-                reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton("📤 Uploader", callback_data="menu:upload"),
-                    InlineKeyboardButton("◀ Menu", callback_data="menu:main"),
-                ]]),
+                "🔗 <b>Générer un lien</b>\n\nChoisis la campagne pour laquelle tu veux générer un lien :",
+                reply_markup=_campaigns_keyboard(campaigns, links_by_campaign, callback_prefix="link:new"),
                 parse_mode=ParseMode.HTML,
             )
-            return
-        await query.edit_message_text(
-            "🔗 <b>Générer un lien</b>\n\nChoisis la campagne pour laquelle tu veux générer un lien :",
-            reply_markup=_campaigns_keyboard(campaigns, callback_prefix="link:new"),
-            parse_mode=ParseMode.HTML,
-        )
+        except Exception as exc:
+            logger.exception("newlink error: %s", exc)
+            await query.edit_message_text(f"⚠️ Erreur.\nDétail : {exc}", reply_markup=_back_to_menu_keyboard())
 
     elif action == "domains":
         all_domains = settings.get_all_domains()
@@ -316,19 +316,11 @@ async def callback_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "3. Mets à jour la variable d'env <code>DOMAINS</code> sur Render\n\n"
             "Ces domaines sont configurés via la variable <code>DOMAINS</code> dans Render."
         )
-        await query.edit_message_text(
-            msg,
-            reply_markup=_back_to_menu_keyboard(),
-            parse_mode=ParseMode.HTML,
-        )
+        await query.edit_message_text(msg, reply_markup=_back_to_menu_keyboard(), parse_mode=ParseMode.HTML)
 
     elif action == "stats":
         try:
-            db = SessionLocal()
-            try:
-                campaigns = db.query(Campaign).all()
-            finally:
-                db.close()
+            campaigns = dao.list_campaigns()
             if not campaigns:
                 await query.edit_message_text(
                     MESSAGES["no_campaigns"],
@@ -336,9 +328,10 @@ async def callback_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     parse_mode=ParseMode.HTML,
                 )
                 return
+            links_by_campaign = {c["id"]: dao.list_links_for_campaign(c["id"]) for c in campaigns}
             await query.edit_message_text(
                 "📊 <b>Statistiques</b>\n\nChoisis une campagne :",
-                reply_markup=_campaigns_keyboard(campaigns, callback_prefix="stats:show"),
+                reply_markup=_campaigns_keyboard(campaigns, links_by_campaign, callback_prefix="stats:show"),
                 parse_mode=ParseMode.HTML,
             )
         except Exception as exc:
@@ -350,9 +343,7 @@ async def callback_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif action == "help":
         await query.edit_message_text(
-            MESSAGES["help"],
-            reply_markup=_back_to_menu_keyboard(),
-            parse_mode=ParseMode.HTML,
+            MESSAGES["help"], reply_markup=_back_to_menu_keyboard(), parse_mode=ParseMode.HTML
         )
 
     elif action == "admin":
@@ -362,11 +353,7 @@ async def callback_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"<code>{admin_url}</code>\n\n"
             "⚠️ Garde cette URL privée. Ne la partage avec personne."
         )
-        await query.edit_message_text(
-            msg,
-            reply_markup=_back_to_menu_keyboard(),
-            parse_mode=ParseMode.HTML,
-        )
+        await query.edit_message_text(msg, reply_markup=_back_to_menu_keyboard(), parse_mode=ParseMode.HTML)
 
 
 # ──────────────────────────────────────────────
@@ -387,82 +374,85 @@ async def callback_campaign(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if action == "detail":
         campaign_id = int(param)
-        db = SessionLocal()
         try:
-            campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
+            campaign = dao.get_campaign(campaign_id)
             if not campaign:
                 await query.edit_message_text("❌ Campagne introuvable.", reply_markup=_back_to_menu_keyboard())
                 return
-            active_links = sum(1 for l in campaign.links if l.is_active)
-            total_links = len(campaign.links)
-            created = campaign.created_at.strftime("%d/%m/%Y") if campaign.created_at else "—"
+            links = dao.list_links_for_campaign(campaign_id)
+            active_links = sum(1 for l in links if l.get("is_active"))
+            total_links = len(links)
+            versions = dao.list_campaign_versions(campaign["name"])
+            version_info = f"v{campaign['version']}" + (" (courante)" if campaign.get("is_current") else " (ancienne)")
+            created = campaign["created_at"][:10] if campaign.get("created_at") else "—"
             msg = (
-                f"📁 <b>{campaign.name}</b>\n\n"
-                f"🆔 ID : {campaign.id}\n"
+                f"📁 <b>{campaign['name']}</b> ({version_info})\n\n"
+                f"🆔 ID : {campaign['id']}\n"
                 f"📅 Créée le : {created}\n"
-                f"📄 Fichier d'entrée : <code>{campaign.entry_file or '—'}</code>\n"
-                f"🔗 Liens actifs : {active_links} / {total_links}\n\n"
-                "Que veux-tu faire ?"
+                f"📄 Fichier d'entrée : <code>{campaign.get('entry_file') or '—'}</code>\n"
+                f"🔗 Liens actifs : {active_links} / {total_links}\n"
             )
-        finally:
-            db.close()
-        await query.edit_message_text(
-            msg,
-            reply_markup=_campaign_detail_keyboard(campaign_id),
-            parse_mode=ParseMode.HTML,
-        )
+            if len(versions) > 1:
+                msg += f"\n📦 Versions disponibles : {len(versions)}\n"
+            msg += "\nQue veux-tu faire ?"
+            await query.edit_message_text(
+                msg,
+                reply_markup=_campaign_detail_keyboard(campaign_id, len(versions) > 1),
+                parse_mode=ParseMode.HTML,
+            )
+        except Exception as exc:
+            logger.exception("campaign detail error: %s", exc)
+            await query.edit_message_text(f"⚠️ Erreur.\nDétail : {exc}", reply_markup=_back_to_menu_keyboard())
 
     elif action == "delete":
         campaign_id = int(param)
-        db = SessionLocal()
         try:
-            campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
+            campaign = dao.get_campaign(campaign_id)
             if not campaign:
                 await query.edit_message_text("❌ Campagne introuvable.", reply_markup=_back_to_menu_keyboard())
                 return
-            active_links = sum(1 for l in campaign.links if l.is_active)
-            total_links = len(campaign.links)
+            links = dao.list_links_for_campaign(campaign_id)
+            active_links = sum(1 for l in links if l.get("is_active"))
+            total_links = len(links)
             msg = (
                 f"⚠️ <b>Confirmer la suppression</b>\n\n"
-                f"Tu vas supprimer la campagne <b>{campaign.name}</b> :\n"
+                f"Tu vas supprimer la campagne <b>{campaign['name']}</b> :\n"
                 f"- {total_links} lien(s) seront désactivés\n"
                 "- Tous les fichiers seront effacés\n"
                 "- Cette action est <b>IRRÉVERSIBLE</b>\n\n"
                 "Confirmer ?"
             )
-        finally:
-            db.close()
-        await query.edit_message_text(
-            msg,
-            reply_markup=InlineKeyboardMarkup([
-                [
+            await query.edit_message_text(
+                msg,
+                reply_markup=InlineKeyboardMarkup([[
                     InlineKeyboardButton("✅ Oui, supprimer", callback_data=f"campaign:delete_confirm:{campaign_id}"),
                     InlineKeyboardButton("❌ Annuler", callback_data=f"campaign:detail:{campaign_id}"),
-                ]
-            ]),
-            parse_mode=ParseMode.HTML,
-        )
+                ]]),
+                parse_mode=ParseMode.HTML,
+            )
+        except Exception as exc:
+            logger.exception("campaign delete error: %s", exc)
+            await query.edit_message_text(f"⚠️ Erreur.\nDétail : {exc}", reply_markup=_back_to_menu_keyboard())
 
     elif action == "delete_confirm":
         campaign_id = int(param)
-        db = SessionLocal()
         try:
-            campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
+            campaign = dao.get_campaign(campaign_id)
             if not campaign:
                 await query.edit_message_text("❌ Campagne introuvable.", reply_markup=_back_to_menu_keyboard())
                 return
-            name = campaign.name
-            storage_path = campaign.storage_path
-            db.delete(campaign)
-            db.commit()
-        finally:
-            db.close()
+            name = campaign["name"]
+            storage_path = campaign.get("storage_path", "")
+            dao.delete_campaign(campaign_id)
+        except Exception as exc:
+            logger.exception("campaign delete_confirm error: %s", exc)
+            await query.edit_message_text(f"⚠️ Erreur.\nDétail : {exc}", reply_markup=_back_to_menu_keyboard())
+            return
 
         try:
-            from backend.storage import delete_campaign_files
-            delete_campaign_files(storage_path)
+            storage_sb.delete_campaign_storage(storage_path)
         except Exception as exc:
-            logger.warning("Error deleting campaign files: %s", exc)
+            logger.warning("Error deleting campaign storage: %s", exc)
 
         await query.edit_message_text(
             f"✅ Campagne <b>{name}</b> supprimée avec succès.",
@@ -491,44 +481,44 @@ async def callback_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if action == "new":
         campaign_id = int(parts[2]) if len(parts) > 2 else 0
-        db = SessionLocal()
         try:
-            campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
+            campaign = dao.get_campaign(campaign_id)
             if not campaign:
                 await query.edit_message_text("❌ Campagne introuvable.", reply_markup=_back_to_menu_keyboard())
                 return
-            name = campaign.name
-        finally:
-            db.close()
-        await query.edit_message_text(
-            f"🌐 <b>Choisis le domaine pour ton lien</b>\n\nCampagne : <b>{name}</b>\n\nDomaines configurés :",
-            reply_markup=_domain_keyboard(campaign_id),
-            parse_mode=ParseMode.HTML,
-        )
+            await query.edit_message_text(
+                f"🌐 <b>Choisis le domaine pour ton lien</b>\n\nCampagne : <b>{campaign['name']}</b>\n\nDomaines configurés :",
+                reply_markup=_domain_keyboard(campaign_id),
+                parse_mode=ParseMode.HTML,
+            )
+        except Exception as exc:
+            logger.exception("link new error: %s", exc)
+            await query.edit_message_text(f"⚠️ Erreur.\nDétail : {exc}", reply_markup=_back_to_menu_keyboard())
 
     elif action == "gen":
         campaign_id = int(parts[2]) if len(parts) > 2 else 0
         domain_val = parts[3] if len(parts) > 3 else ""
         domain: Optional[str] = domain_val if domain_val else None
 
-        db = SessionLocal()
         try:
-            campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
+            campaign = dao.get_campaign(campaign_id)
             if not campaign:
                 await query.edit_message_text("❌ Campagne introuvable.", reply_markup=_back_to_menu_keyboard())
                 return
-            link = _create_link_for_campaign(db, campaign, domain)
-            full_url = _make_full_url(link.slug, link.domain)
-            campaign_name = campaign.name
-        finally:
-            db.close()
+            link = _create_link_in_dao(campaign_id, domain)
+            full_url = _make_full_url(link["slug"], link.get("domain"))
+            campaign_name = campaign["name"]
+        except Exception as exc:
+            logger.exception("link gen error: %s", exc)
+            await query.edit_message_text(f"⚠️ Erreur.\nDétail : {exc}", reply_markup=_back_to_menu_keyboard())
+            return
 
         domain_display = domain or settings.get_public_hostname()
         msg = (
             "✅ <b>Nouveau lien généré !</b>\n\n"
             f"🔗 <code>{full_url}</code>\n\n"
             f"📁 Campagne : {campaign_name}\n"
-            f"🆔 Slug : <code>{link.slug}</code>\n"
+            f"🆔 Slug : <code>{link['slug']}</code>\n"
             f"🌐 Domaine : {domain_display}\n\n"
             "💡 <i>Astuce : appuie sur le lien pour le copier. "
             "Si le lien est cramé, reviens et génère un nouveau slug !</i>"
@@ -541,6 +531,64 @@ async def callback_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ]),
             parse_mode=ParseMode.HTML,
         )
+
+    elif action == "detail":
+        link_id = int(parts[2]) if len(parts) > 2 else 0
+        try:
+            link = dao.get_link_by_id(link_id)
+            if not link:
+                await query.edit_message_text("❌ Lien introuvable.", reply_markup=_back_to_menu_keyboard())
+                return
+            campaign = dao.get_campaign(link["campaign_id"])
+            stats = dao.get_link_stats(link_id)
+            total = stats.get("total_clicks", 0)
+            unique = stats.get("unique_visitors", 0)
+            status = "✅ Actif" if link.get("is_active") else "❌ Désactivé"
+            click_limit = link.get("click_limit") or "illimité"
+            expires_at = link.get("expires_at") or "aucune"
+            campaign_name = campaign["name"] if campaign else "—"
+            msg = (
+                f"🔗 <b>Lien {link['slug']}</b>\n\n"
+                f"📁 Campagne : {campaign_name}\n"
+                f"📊 Clics : {total} ({unique} uniques)\n"
+                f"🔘 Statut : {status}\n"
+                f"🔢 Limite : {click_limit}\n"
+                f"⏰ Expiration : {expires_at}\n"
+            )
+            await query.edit_message_text(
+                msg,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("📊 Graph 7 jours", callback_data=f"graph:link:{link_id}")],
+                    [InlineKeyboardButton("🌍 Géo-blocage", callback_data=f"geo:show:{link_id}")],
+                    [InlineKeyboardButton("🔔 Configurer alerte", callback_data=f"alert:add:{link_id}")],
+                    [InlineKeyboardButton("🗑 Désactiver", callback_data=f"link:deactivate:{link_id}")],
+                    [InlineKeyboardButton("◀ Retour", callback_data=f"campaign:detail:{link['campaign_id']}")],
+                ]),
+                parse_mode=ParseMode.HTML,
+            )
+        except Exception as exc:
+            logger.exception("link detail error: %s", exc)
+            await query.edit_message_text(f"⚠️ Erreur.\nDétail : {exc}", reply_markup=_back_to_menu_keyboard())
+
+    elif action == "deactivate":
+        link_id = int(parts[2]) if len(parts) > 2 else 0
+        try:
+            link = dao.get_link_by_id(link_id)
+            if not link:
+                await query.edit_message_text("❌ Lien introuvable.", reply_markup=_back_to_menu_keyboard())
+                return
+            dao.deactivate_link(link["slug"])
+            await query.edit_message_text(
+                f"✅ Lien <code>{link['slug']}</code> désactivé.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("◀ Retour campagne", callback_data=f"campaign:detail:{link['campaign_id']}")],
+                    [InlineKeyboardButton("◀ Menu principal", callback_data="menu:main")],
+                ]),
+                parse_mode=ParseMode.HTML,
+            )
+        except Exception as exc:
+            logger.exception("link deactivate error: %s", exc)
+            await query.edit_message_text(f"⚠️ Erreur.\nDétail : {exc}", reply_markup=_back_to_menu_keyboard())
 
 
 # ──────────────────────────────────────────────
@@ -561,50 +609,399 @@ async def callback_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if action == "show":
         try:
-            db = SessionLocal()
-            try:
-                campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
-                if not campaign:
-                    await query.edit_message_text("❌ Campagne introuvable.", reply_markup=_back_to_menu_keyboard())
-                    return
+            campaign = dao.get_campaign(campaign_id)
+            if not campaign:
+                await query.edit_message_text("❌ Campagne introuvable.", reply_markup=_back_to_menu_keyboard())
+                return
 
-                active = [l for l in campaign.links if l.is_active]
-                inactive = [l for l in campaign.links if not l.is_active]
-                total_clicks = sum(l.clicks for l in campaign.links)
-                total_links = len(campaign.links)
+            links = dao.list_links_for_campaign(campaign_id)
+            active = [l for l in links if l.get("is_active")]
+            inactive = [l for l in links if not l.get("is_active")]
+            total_links = len(links)
 
-                lines = [f"📊 <b>Statistiques — {campaign.name}</b>\n"]
-                lines.append(f"🔗 {total_links} lien(s) au total ({len(active)} actif(s), {len(inactive)} désactivé(s))\n")
+            total_clicks = 0
+            lines = [f"📊 <b>Statistiques — {campaign['name']}</b>\n"]
+            lines.append(f"🔗 {total_links} lien(s) au total ({len(active)} actif(s), {len(inactive)} désactivé(s))\n")
 
-                if active:
-                    lines.append("<b>Liens actifs :</b>")
-                    for l in active:
-                        domain_label = l.domain or settings.get_public_hostname()
-                        lines.append(f"• <code>{l.slug}</code> → {l.clicks} clic(s) ({domain_label})")
+            if active:
+                lines.append("<b>Liens actifs :</b>")
+                for l in active:
+                    stats = dao.get_link_stats(l["id"])
+                    clicks = stats.get("total_clicks", 0)
+                    total_clicks += clicks
+                    domain_label = l.get("domain") or settings.get_public_hostname()
+                    lines.append(f"• <code>{l['slug']}</code> → {clicks} clic(s) ({domain_label})")
 
-                if inactive:
-                    lines.append("\n<b>Liens désactivés :</b>")
-                    for l in inactive:
-                        lines.append(f"• <code>{l.slug}</code> → {l.clicks} clic(s)")
+            if inactive:
+                lines.append("\n<b>Liens désactivés :</b>")
+                for l in inactive:
+                    stats = dao.get_link_stats(l["id"])
+                    clicks = stats.get("total_clicks", 0)
+                    total_clicks += clicks
+                    lines.append(f"• <code>{l['slug']}</code> → {clicks} clic(s)")
 
-                lines.append(f"\n<b>Total : {total_clicks} clic(s)</b>")
+            lines.append(f"\n<b>Total : {total_clicks} clic(s)</b>")
 
-                await query.edit_message_text(
-                    "\n".join(lines),
-                    reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("🔗 Nouveau lien", callback_data=f"link:new:{campaign_id}")],
-                        [InlineKeyboardButton("◀ Retour", callback_data="menu:stats")],
-                    ]),
-                    parse_mode=ParseMode.HTML,
-                )
-            finally:
-                db.close()
+            await query.edit_message_text(
+                "\n".join(lines),
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔗 Nouveau lien", callback_data=f"link:new:{campaign_id}")],
+                    [InlineKeyboardButton("📊 Graph 7 jours", callback_data=f"graph:campaign:{campaign_id}")],
+                    [InlineKeyboardButton("◀ Retour", callback_data="menu:stats")],
+                ]),
+                parse_mode=ParseMode.HTML,
+            )
         except Exception as exc:
             logger.exception("callback_stats error: %s", exc)
             await query.edit_message_text(
                 f"⚠️ Erreur lors du chargement des statistiques.\nDétail : {exc}",
                 reply_markup=_back_to_menu_keyboard(),
             )
+
+
+# ──────────────────────────────────────────────
+# Graph callback
+# ──────────────────────────────────────────────
+
+async def callback_graph(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if not is_telegram_admin(query.from_user.id):
+        await query.edit_message_text("🚫 Accès refusé.")
+        return
+
+    parts = query.data.split(":", 2)
+    action = parts[1] if len(parts) > 1 else ""
+    param_id = int(parts[2]) if len(parts) > 2 else 0
+
+    try:
+        from backend.charts import render_clicks_chart
+    except ImportError:
+        await query.edit_message_text(
+            "⚠️ matplotlib n'est pas installé.",
+            reply_markup=_back_to_menu_keyboard(),
+        )
+        return
+
+    try:
+        if action == "campaign":
+            campaign = dao.get_campaign(param_id)
+            if not campaign:
+                await query.edit_message_text("❌ Campagne introuvable.", reply_markup=_back_to_menu_keyboard())
+                return
+            links = dao.list_links_for_campaign(param_id)
+            # Aggregate clicks per day across all links
+            from datetime import timedelta
+            days = 7
+            combined: dict[str, int] = {}
+            for link in links:
+                data = dao.get_clicks_per_day(link["id"], days)
+                for d in data:
+                    combined[d["date"]] = combined.get(d["date"], 0) + d["count"]
+            chart_data = [{"date": k, "count": v} for k, v in sorted(combined.items())]
+            title = f"Clics — {campaign['name']} (7 derniers jours)"
+            back_cb = f"campaign:detail:{param_id}"
+        elif action == "link":
+            link = dao.get_link_by_id(param_id)
+            if not link:
+                await query.edit_message_text("❌ Lien introuvable.", reply_markup=_back_to_menu_keyboard())
+                return
+            chart_data = dao.get_clicks_per_day(param_id, 7)
+            title = f"Clics — {link['slug']} (7 derniers jours)"
+            back_cb = f"link:detail:{param_id}"
+        else:
+            await query.edit_message_text("❌ Action inconnue.", reply_markup=_back_to_menu_keyboard())
+            return
+
+        png_bytes = render_clicks_chart(chart_data, title)
+        await query.message.reply_photo(
+            photo=io.BytesIO(png_bytes),
+            caption=title,
+        )
+        await query.edit_message_reply_markup(
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀ Retour", callback_data=back_cb)]])
+        )
+    except Exception as exc:
+        logger.exception("callback_graph error: %s", exc)
+        await query.edit_message_text(f"⚠️ Erreur lors de la génération du graphique.\nDétail : {exc}", reply_markup=_back_to_menu_keyboard())
+
+
+# ──────────────────────────────────────────────
+# Geo callbacks
+# ──────────────────────────────────────────────
+
+async def callback_geo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if not is_telegram_admin(query.from_user.id):
+        await query.edit_message_text("🚫 Accès refusé.")
+        return
+
+    parts = query.data.split(":", 3)
+    action = parts[1] if len(parts) > 1 else ""
+    param = parts[2] if len(parts) > 2 else ""
+    extra = parts[3] if len(parts) > 3 else ""
+
+    if action == "show":
+        link_id = int(param)
+        try:
+            rule = dao.get_geo_rule(link_id)
+            if rule:
+                countries_str = ", ".join(rule.get("countries", []))
+                msg = (
+                    f"🌍 <b>Règle de géo-blocage</b>\n\n"
+                    f"Mode : <b>{'Bloquer' if rule['mode'] == 'block' else 'Autoriser seulement'}</b>\n"
+                    f"Pays : <code>{countries_str or 'aucun'}</code>\n"
+                )
+            else:
+                msg = "🌍 <b>Géo-blocage</b>\n\nAucune règle configurée."
+            await query.edit_message_text(
+                msg,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🚫 Bloquer des pays", callback_data=f"geo:setmode:{link_id}:block")],
+                    [InlineKeyboardButton("✅ Autoriser seulement", callback_data=f"geo:setmode:{link_id}:allow")],
+                    [InlineKeyboardButton("🗑 Supprimer la règle", callback_data=f"geo:delete:{link_id}")],
+                    [InlineKeyboardButton("◀ Retour", callback_data=f"link:detail:{link_id}")],
+                ]),
+                parse_mode=ParseMode.HTML,
+            )
+        except Exception as exc:
+            logger.exception("geo show error: %s", exc)
+            await query.edit_message_text(f"⚠️ Erreur.\nDétail : {exc}", reply_markup=_back_to_menu_keyboard())
+
+    elif action == "setmode":
+        link_id = int(param)
+        mode = extra
+        context.user_data[WAITING_FOR_GEO_COUNTRIES] = {"link_id": link_id, "mode": mode}
+        mode_label = "bloquer" if mode == "block" else "autoriser seulement"
+        await query.edit_message_text(
+            f"🌍 <b>Géo-blocage — {mode_label}</b>\n\n"
+            "Envoie les codes pays séparés par des virgules.\n"
+            "Exemple : <code>FR,BE,CH</code>\n\n"
+            "Annule avec /cancel",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Annuler", callback_data="menu:main")]]),
+            parse_mode=ParseMode.HTML,
+        )
+
+    elif action == "delete":
+        link_id = int(param)
+        try:
+            dao.delete_geo_rule(link_id)
+            await query.edit_message_text(
+                "✅ Règle de géo-blocage supprimée.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀ Retour", callback_data=f"link:detail:{link_id}")]]),
+            )
+        except Exception as exc:
+            logger.exception("geo delete error: %s", exc)
+            await query.edit_message_text(f"⚠️ Erreur.\nDétail : {exc}", reply_markup=_back_to_menu_keyboard())
+
+
+# ──────────────────────────────────────────────
+# Alert callbacks
+# ──────────────────────────────────────────────
+
+async def callback_alert(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if not is_telegram_admin(query.from_user.id):
+        await query.edit_message_text("🚫 Accès refusé.")
+        return
+
+    parts = query.data.split(":", 2)
+    action = parts[1] if len(parts) > 1 else ""
+    param = parts[2] if len(parts) > 2 else ""
+
+    if action == "add":
+        link_id = int(param)
+        context.user_data[WAITING_FOR_ALERT_THRESHOLD] = {"link_id": link_id}
+        await query.edit_message_text(
+            "🔔 <b>Configurer une alerte de clics</b>\n\n"
+            "Envoie le nombre de clics à partir duquel tu veux être notifié.\n"
+            "Exemple : <code>100</code>\n\n"
+            "Annule avec /cancel",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Annuler", callback_data="menu:main")]]),
+            parse_mode=ParseMode.HTML,
+        )
+
+
+# ──────────────────────────────────────────────
+# Version callbacks
+# ──────────────────────────────────────────────
+
+async def callback_version(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if not is_telegram_admin(query.from_user.id):
+        await query.edit_message_text("🚫 Accès refusé.")
+        return
+
+    parts = query.data.split(":", 2)
+    action = parts[1] if len(parts) > 1 else ""
+    param = parts[2] if len(parts) > 2 else ""
+
+    if action == "create_new":
+        existing_id = int(param)
+        existing = dao.get_campaign(existing_id)
+        if not existing:
+            await query.edit_message_text("❌ Campagne introuvable.", reply_markup=_back_to_menu_keyboard())
+            return
+
+        zip_bytes = context.user_data.get("pending_zip")
+        if not zip_bytes:
+            await query.edit_message_text(
+                "❌ Les données du zip ont expiré. Recommence l'upload.",
+                reply_markup=_back_to_menu_keyboard(),
+            )
+            return
+
+        name = context.user_data.get("pending_zip_name", existing["name"])
+        filename = context.user_data.get("pending_zip_filename", "upload.zip")
+        new_version = existing["version"] + 1
+
+        await query.edit_message_text(f"⏳ Création de la version {new_version} de {name}…")
+
+        try:
+            slug_dir = slugify(name)
+            storage_path, entry_file = storage_sb.upload_campaign(zip_bytes, slug_dir, new_version)
+            new_campaign = dao.create_campaign(name, storage_path, entry_file, filename, version=new_version)
+
+            # Migrate active links to new campaign version
+            old_links = dao.list_links_for_campaign(existing_id)
+            dao.migrate_links_to_campaign([lnk["id"] for lnk in old_links], new_campaign["id"])
+
+            dao.set_current_version(new_campaign["id"])
+
+            context.user_data.pop("pending_zip", None)
+            context.user_data.pop("pending_zip_name", None)
+            context.user_data.pop("pending_zip_filename", None)
+            context.user_data.pop("pending_existing_id", None)
+            context.user_data.pop("pending_existing_version", None)
+
+            await query.edit_message_text(
+                f"✅ <b>Version {new_version} créée !</b>\n\n"
+                f"📁 {name}\n"
+                f"🔗 {len(old_links)} lien(s) migré(s) vers v{new_version}",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔗 Voir la campagne", callback_data=f"campaign:detail:{new_campaign['id']}")],
+                    [InlineKeyboardButton("◀ Menu", callback_data="menu:main")],
+                ]),
+                parse_mode=ParseMode.HTML,
+            )
+        except Exception as exc:
+            logger.exception("Error creating new version: %s", exc)
+            await query.edit_message_text(f"❌ Erreur : {exc}", reply_markup=_back_to_menu_keyboard())
+
+    elif action == "list":
+        campaign_id = int(param)
+        try:
+            campaign = dao.get_campaign(campaign_id)
+            if not campaign:
+                await query.edit_message_text("❌ Campagne introuvable.", reply_markup=_back_to_menu_keyboard())
+                return
+            versions = dao.list_campaign_versions(campaign["name"])
+            lines = [f"📦 <b>Versions de « {campaign['name']} »</b>\n"]
+            for v in versions:
+                current_marker = " ✅ (courante)" if v.get("is_current") else ""
+                lines.append(f"• v{v['version']}{current_marker} — ID {v['id']}")
+            buttons = []
+            for v in versions:
+                if not v.get("is_current"):
+                    buttons.append([InlineKeyboardButton(
+                        f"🔄 Activer v{v['version']}",
+                        callback_data=f"version:switch:{v['id']}",
+                    )])
+            buttons.append([InlineKeyboardButton("◀ Retour", callback_data=f"campaign:detail:{campaign_id}")])
+            await query.edit_message_text(
+                "\n".join(lines),
+                reply_markup=InlineKeyboardMarkup(buttons),
+                parse_mode=ParseMode.HTML,
+            )
+        except Exception as exc:
+            logger.exception("version list error: %s", exc)
+            await query.edit_message_text(f"⚠️ Erreur.\nDétail : {exc}", reply_markup=_back_to_menu_keyboard())
+
+    elif action == "switch":
+        target_id = int(param)
+        try:
+            dao.set_current_version(target_id)
+            campaign = dao.get_campaign(target_id)
+            name = campaign["name"] if campaign else "?"
+            await query.edit_message_text(
+                f"✅ Version v{campaign['version'] if campaign else '?'} de <b>{name}</b> activée !",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("◀ Voir la campagne", callback_data=f"campaign:detail:{target_id}")],
+                    [InlineKeyboardButton("◀ Menu principal", callback_data="menu:main")],
+                ]),
+                parse_mode=ParseMode.HTML,
+            )
+        except Exception as exc:
+            logger.exception("version switch error: %s", exc)
+            await query.edit_message_text(f"⚠️ Erreur.\nDétail : {exc}", reply_markup=_back_to_menu_keyboard())
+
+
+# ──────────────────────────────────────────────
+# Text message handler (for geo countries / alert threshold input)
+# ──────────────────────────────────────────────
+
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await _guard(update, context):
+        return
+
+    # Handle geo countries input
+    geo_state = context.user_data.get(WAITING_FOR_GEO_COUNTRIES)
+    if geo_state:
+        text = (update.message.text or "").strip().upper()
+        raw_countries = [c.strip() for c in text.split(",") if c.strip()]
+        invalid = [c for c in raw_countries if len(c) != 2 or not c.isalpha()]
+        if invalid:
+            await update.message.reply_html(
+                f"⚠️ Codes invalides : {', '.join(invalid)}\n"
+                "Utilise des codes ISO 2 lettres (ex: FR, BE, CH).\n\nRéessaie ou /cancel"
+            )
+            return
+        try:
+            dao.set_geo_rule(geo_state["link_id"], geo_state["mode"], raw_countries)
+            context.user_data.pop(WAITING_FOR_GEO_COUNTRIES, None)
+            mode_label = "Blocage" if geo_state["mode"] == "block" else "Autorisation"
+            await update.message.reply_html(
+                f"✅ {mode_label} configuré pour : <code>{', '.join(raw_countries)}</code>",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("◀ Retour lien", callback_data=f"link:detail:{geo_state['link_id']}")],
+                    [InlineKeyboardButton("◀ Menu principal", callback_data="menu:main")],
+                ]),
+            )
+        except Exception as exc:
+            logger.exception("set geo rule error: %s", exc)
+            await update.message.reply_text(f"❌ Erreur : {exc}")
+        return
+
+    # Handle alert threshold input
+    alert_state = context.user_data.get(WAITING_FOR_ALERT_THRESHOLD)
+    if alert_state:
+        text = (update.message.text or "").strip()
+        try:
+            threshold = int(text)
+            if threshold <= 0:
+                raise ValueError("threshold must be positive")
+        except ValueError:
+            await update.message.reply_text(
+                "⚠️ Envoie un nombre entier positif.\n\nRéessaie ou /cancel"
+            )
+            return
+        try:
+            dao.add_alert(alert_state["link_id"], threshold)
+            context.user_data.pop(WAITING_FOR_ALERT_THRESHOLD, None)
+            await update.message.reply_html(
+                f"✅ Alerte configurée : tu seras notifié à <b>{threshold}</b> clics.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("◀ Retour lien", callback_data=f"link:detail:{alert_state['link_id']}")],
+                    [InlineKeyboardButton("◀ Menu principal", callback_data="menu:main")],
+                ]),
+            )
+        except Exception as exc:
+            logger.exception("add alert error: %s", exc)
+            await update.message.reply_text(f"❌ Erreur : {exc}")
+        return
 
 
 # ──────────────────────────────────────────────
@@ -655,73 +1052,75 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Erreur lors du téléchargement : {e}")
         return
 
-    db = SessionLocal()
-    try:
-        name = caption
-        if db.query(Campaign).filter(Campaign.name == name).first():
-            await update.message.reply_html(
-                f"❌ Une campagne avec le nom <b>« {name} »</b> existe déjà.\n"
-                "Choisis un autre nom (modifie la légende du zip).",
-            )
-            context.user_data[WAITING_FOR_ZIP] = True
-            return
-
-        slug_dir = slugify(name)
-        try:
-            storage_path, entry_file = validate_and_unzip(zip_bytes, slug_dir)
-        except StorageError as e:
-            await update.message.reply_text(f"❌ Erreur : {e}")
-            context.user_data[WAITING_FOR_ZIP] = True
-            return
-
-        zip_size_mb = round(len(zip_bytes) / 1024 / 1024, 2)
-
-        campaign = Campaign(
-            name=name,
-            original_filename=doc.file_name,
-            storage_path=storage_path,
-            entry_file=entry_file,
-        )
-        db.add(campaign)
-        db.commit()
-        db.refresh(campaign)
-
-        msg = (
-            "✅ <b>Campagne créée avec succès !</b>\n\n"
-            f"📁 Nom : <b>{campaign.name}</b>\n"
-            f"🆔 ID : {campaign.id}\n"
-            f"📦 Taille : {zip_size_mb} MB\n"
-            f"📄 Fichier d'entrée : <code>{entry_file or '—'}</code>\n\n"
-            "Tu peux maintenant générer un lien :"
-        )
+    name = caption
+    existing = dao.get_campaign_by_name(name)
+    if existing:
+        context.user_data["pending_zip"] = zip_bytes
+        context.user_data["pending_zip_name"] = name
+        context.user_data["pending_zip_filename"] = doc.file_name
+        context.user_data["pending_existing_id"] = existing["id"]
+        context.user_data["pending_existing_version"] = existing["version"]
         await update.message.reply_html(
-            msg,
+            f"⚠️ Une campagne <b>« {name} »</b> existe déjà (version {existing['version']}).\n\n"
+            "Que veux-tu faire ?",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔗 Générer un lien pour cette campagne", callback_data=f"link:new:{campaign.id}")],
-                [InlineKeyboardButton("◀ Menu principal", callback_data="menu:main")],
+                [InlineKeyboardButton(
+                    f"📦 Créer la version {existing['version'] + 1} (liens → v{existing['version'] + 1})",
+                    callback_data=f"version:create_new:{existing['id']}",
+                )],
+                [InlineKeyboardButton("❌ Annuler", callback_data="menu:main")],
             ]),
         )
-    finally:
-        db.close()
+        return
+
+    slug_dir = slugify(name)
+    try:
+        storage_path, entry_file = storage_sb.upload_campaign(zip_bytes, slug_dir, 1)
+    except StorageError as e:
+        await update.message.reply_text(f"❌ Erreur : {e}")
+        context.user_data[WAITING_FOR_ZIP] = True
+        return
+
+    try:
+        campaign = dao.create_campaign(
+            name=name,
+            storage_path=storage_path,
+            entry_file=entry_file,
+            original_filename=doc.file_name,
+            version=1,
+        )
+    except Exception as e:
+        await update.message.reply_text(f"❌ Erreur lors de la création : {e}")
+        return
+
+    zip_size_mb = round(len(zip_bytes) / 1024 / 1024, 2)
+    msg = (
+        "✅ <b>Campagne créée avec succès !</b>\n\n"
+        f"📁 Nom : <b>{campaign['name']}</b>\n"
+        f"🆔 ID : {campaign['id']}\n"
+        f"📦 Taille : {zip_size_mb} MB\n"
+        f"📄 Fichier d'entrée : <code>{entry_file or '—'}</code>\n\n"
+        "Tu peux maintenant générer un lien :"
+    )
+    await update.message.reply_html(
+        msg,
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔗 Générer un lien pour cette campagne", callback_data=f"link:new:{campaign['id']}")],
+            [InlineKeyboardButton("◀ Menu principal", callback_data="menu:main")],
+        ]),
+    )
 
 
 # ──────────────────────────────────────────────
 # Helpers
 # ──────────────────────────────────────────────
 
-def _create_link_for_campaign(db, campaign: Campaign, domain: Optional[str]) -> Link:
+def _create_link_in_dao(campaign_id: int, domain: Optional[str]) -> dict:
     for _ in range(20):
         slug = generate_slug()
-        if not db.query(Link).filter(Link.slug == slug).first():
-            break
-    else:
-        raise RuntimeError("Could not generate unique slug")
-
-    link = Link(slug=slug, campaign_id=campaign.id, domain=domain)
-    db.add(link)
-    db.commit()
-    db.refresh(link)
-    return link
+        if not dao.get_link_by_slug(slug):
+            return dao.create_link(slug, campaign_id, domain)
+    raise RuntimeError("Could not generate unique slug")
 
 
 def _make_full_url(slug: str, domain: Optional[str]) -> str:
@@ -731,11 +1130,10 @@ def _make_full_url(slug: str, domain: Optional[str]) -> str:
 
 
 # ──────────────────────────────────────────────
-# Backward-compat legacy commands (redirect to new flows)
+# Backward-compat legacy commands
 # ──────────────────────────────────────────────
 
 async def cmd_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Legacy /upload — redirect to upload flow."""
     if not await _guard(update, context):
         return
     context.user_data[WAITING_FOR_ZIP] = True
@@ -748,111 +1146,82 @@ async def cmd_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Legacy /list — redirect to campaigns flow."""
     if not await _guard(update, context):
         return
-    db = SessionLocal()
-    try:
-        campaigns = db.query(Campaign).all()
-    finally:
-        db.close()
+    campaigns = dao.list_campaigns()
     if not campaigns:
         await update.message.reply_html(MESSAGES["no_campaigns"], reply_markup=_main_menu_keyboard())
         return
+    links_by_campaign = {c["id"]: dao.list_links_for_campaign(c["id"]) for c in campaigns}
     await update.message.reply_html(
         f"📋 <b>Tes campagnes ({len(campaigns)})</b>\n\nClique sur une campagne pour voir ses détails :",
-        reply_markup=_campaigns_keyboard(campaigns),
+        reply_markup=_campaigns_keyboard(campaigns, links_by_campaign),
     )
 
 
 async def cmd_newlink(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Legacy /newlink — redirect to new link flow."""
     if not await _guard(update, context):
         return
     args = context.args or []
+    campaigns = dao.list_campaigns()
+    if not campaigns:
+        await update.message.reply_html(MESSAGES["no_campaigns"], reply_markup=_main_menu_keyboard())
+        return
 
-    db = SessionLocal()
-    try:
-        campaigns = db.query(Campaign).all()
-        if not campaigns:
-            await update.message.reply_html(MESSAGES["no_campaigns"], reply_markup=_main_menu_keyboard())
-            return
+    if args:
+        try:
+            campaign_id = int(args[0])
+            campaign = dao.get_campaign(campaign_id)
+            if campaign:
+                await update.message.reply_html(
+                    f"🌐 <b>Choisis le domaine pour ton lien</b>\n\nCampagne : <b>{campaign['name']}</b>",
+                    reply_markup=_domain_keyboard(campaign_id),
+                )
+                return
+        except ValueError:
+            pass
 
-        # If campaign_id provided, jump straight to domain selection
-        if args:
-            try:
-                campaign_id = int(args[0])
-                campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
-                if campaign:
-                    await update.message.reply_html(
-                        f"🌐 <b>Choisis le domaine pour ton lien</b>\n\nCampagne : <b>{campaign.name}</b>",
-                        reply_markup=_domain_keyboard(campaign_id),
-                    )
-                    return
-            except ValueError:
-                pass
-
-        await update.message.reply_html(
-            "🔗 <b>Générer un lien</b>\n\nChoisis la campagne :",
-            reply_markup=_campaigns_keyboard(campaigns, callback_prefix="link:new"),
-        )
-    finally:
-        db.close()
+    links_by_campaign = {c["id"]: dao.list_links_for_campaign(c["id"]) for c in campaigns}
+    await update.message.reply_html(
+        "🔗 <b>Générer un lien</b>\n\nChoisis la campagne :",
+        reply_markup=_campaigns_keyboard(campaigns, links_by_campaign, callback_prefix="link:new"),
+    )
 
 
 async def cmd_setdomain(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Legacy /setdomain — kept for backward compat."""
     if not await _guard(update, context):
         return
-
     args = context.args or []
     if len(args) < 2:
         await update.message.reply_text("Usage : /setdomain <slug> <domain>")
         return
-
     slug, domain = args[0], args[1]
-    db = SessionLocal()
-    try:
-        link = db.query(Link).filter(Link.slug == slug).first()
-        if not link:
-            await update.message.reply_text(f"❌ Lien {slug} introuvable.")
-            return
-        link.domain = domain
-        db.commit()
-        full_url = _make_full_url(link.slug, link.domain)
-        await update.message.reply_html(
-            f"✅ Domaine mis à jour.\n🔗 <code>{full_url}</code>"
-        )
-    finally:
-        db.close()
+    link = dao.get_link_by_slug(slug)
+    if not link:
+        await update.message.reply_text(f"❌ Lien {slug} introuvable.")
+        return
+    dao.update_link_domain(slug, domain)
+    full_url = _make_full_url(slug, domain)
+    await update.message.reply_html(f"✅ Domaine mis à jour.\n🔗 <code>{full_url}</code>")
 
 
 async def cmd_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Legacy /delete — kept for backward compat."""
     if not await _guard(update, context):
         return
-
     args = context.args or []
     if not args:
         await update.message.reply_text("Usage : /delete <slug>")
         return
-
     slug = args[0]
-    db = SessionLocal()
-    try:
-        link = db.query(Link).filter(Link.slug == slug).first()
-        if not link:
-            await update.message.reply_text(f"❌ Lien {slug} introuvable.")
-            return
-        link.is_active = False
-        db.commit()
-        await update.message.reply_html(f"✅ Lien <code>{slug}</code> désactivé.")
-    finally:
-        db.close()
+    link = dao.get_link_by_slug(slug)
+    if not link:
+        await update.message.reply_text(f"❌ Lien {slug} introuvable.")
+        return
+    dao.deactivate_link(slug)
+    await update.message.reply_html(f"✅ Lien <code>{slug}</code> désactivé.")
 
 
 async def cmd_domains(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Legacy /domains — redirect to domains flow."""
     if not await _guard(update, context):
         return
     all_domains = settings.get_all_domains()
@@ -867,24 +1236,18 @@ async def cmd_domains(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Legacy /stats — redirect to stats flow."""
     if not await _guard(update, context):
         return
-
     args = context.args or []
     if not args:
-        # Show campaign list
-        db = SessionLocal()
-        try:
-            campaigns = db.query(Campaign).all()
-        finally:
-            db.close()
+        campaigns = dao.list_campaigns()
         if not campaigns:
             await update.message.reply_html(MESSAGES["no_campaigns"], reply_markup=_main_menu_keyboard())
             return
+        links_by_campaign = {c["id"]: dao.list_links_for_campaign(c["id"]) for c in campaigns}
         await update.message.reply_html(
             "📊 <b>Statistiques</b>\n\nChoisis une campagne :",
-            reply_markup=_campaigns_keyboard(campaigns, callback_prefix="stats:show"),
+            reply_markup=_campaigns_keyboard(campaigns, links_by_campaign, callback_prefix="stats:show"),
         )
         return
 
@@ -894,43 +1257,45 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ campaign_id doit être un entier.")
         return
 
-    db = SessionLocal()
-    try:
-        campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
-        if not campaign:
-            await update.message.reply_text(f"❌ Campagne {campaign_id} introuvable.")
-            return
+    campaign = dao.get_campaign(campaign_id)
+    if not campaign:
+        await update.message.reply_text(f"❌ Campagne {campaign_id} introuvable.")
+        return
 
-        active = [l for l in campaign.links if l.is_active]
-        inactive = [l for l in campaign.links if not l.is_active]
-        total_clicks = sum(l.clicks for l in campaign.links)
+    links = dao.list_links_for_campaign(campaign_id)
+    active = [l for l in links if l.get("is_active")]
+    inactive = [l for l in links if not l.get("is_active")]
+    total_clicks = 0
 
-        lines = [f"📊 <b>Statistiques — {campaign.name}</b>\n"]
-        lines.append(f"🔗 {len(campaign.links)} lien(s) ({len(active)} actif(s), {len(inactive)} désactivé(s))\n")
-        if active:
-            lines.append("<b>Liens actifs :</b>")
-            for l in active:
-                domain_label = l.domain or settings.get_public_hostname()
-                lines.append(f"• <code>{l.slug}</code> → {l.clicks} clic(s) ({domain_label})")
-        if inactive:
-            lines.append("\n<b>Liens désactivés :</b>")
-            for l in inactive:
-                lines.append(f"• <code>{l.slug}</code> → {l.clicks} clic(s)")
-        lines.append(f"\n<b>Total : {total_clicks} clic(s)</b>")
+    lines = [f"📊 <b>Statistiques — {campaign['name']}</b>\n"]
+    lines.append(f"🔗 {len(links)} lien(s) ({len(active)} actif(s), {len(inactive)} désactivé(s))\n")
+    if active:
+        lines.append("<b>Liens actifs :</b>")
+        for l in active:
+            stats = dao.get_link_stats(l["id"])
+            clicks = stats.get("total_clicks", 0)
+            total_clicks += clicks
+            domain_label = l.get("domain") or settings.get_public_hostname()
+            lines.append(f"• <code>{l['slug']}</code> → {clicks} clic(s) ({domain_label})")
+    if inactive:
+        lines.append("\n<b>Liens désactivés :</b>")
+        for l in inactive:
+            stats = dao.get_link_stats(l["id"])
+            clicks = stats.get("total_clicks", 0)
+            total_clicks += clicks
+            lines.append(f"• <code>{l['slug']}</code> → {clicks} clic(s)")
+    lines.append(f"\n<b>Total : {total_clicks} clic(s)</b>")
 
-        await update.message.reply_html(
-            "\n".join(lines),
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔗 Nouveau lien", callback_data=f"link:new:{campaign_id}")],
-                [InlineKeyboardButton("◀ Menu principal", callback_data="menu:main")],
-            ]),
-        )
-    finally:
-        db.close()
+    await update.message.reply_html(
+        "\n".join(lines),
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔗 Nouveau lien", callback_data=f"link:new:{campaign_id}")],
+            [InlineKeyboardButton("◀ Menu principal", callback_data="menu:main")],
+        ]),
+    )
 
 
 async def cmd_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Send the obfuscated admin URL to admins only."""
     if not await _guard(update, context):
         return
     admin_url = _admin_url()
@@ -948,21 +1313,15 @@ async def cmd_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def build_application() -> Application:
     global _bot_instance, _bot_username
-    app = (
-        Application.builder()
-        .token(settings.TELEGRAM_BOT_TOKEN)
-        .build()
-    )
+    app = Application.builder().token(settings.TELEGRAM_BOT_TOKEN).build()
     _bot_instance = app.bot
 
-    # Register menu handlers
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("menu", cmd_menu))
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("cancel", cmd_cancel))
     app.add_handler(CommandHandler("admin", cmd_admin))
 
-    # Legacy backward-compat command handlers
     app.add_handler(CommandHandler("upload", cmd_upload))
     app.add_handler(CommandHandler("list", cmd_list))
     app.add_handler(CommandHandler("newlink", cmd_newlink))
@@ -971,25 +1330,27 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("domains", cmd_domains))
     app.add_handler(CommandHandler("stats", cmd_stats))
 
-    # Inline keyboard callback handlers
     app.add_handler(CallbackQueryHandler(callback_menu, pattern=r"^menu:"))
     app.add_handler(CallbackQueryHandler(callback_campaign, pattern=r"^campaign:"))
     app.add_handler(CallbackQueryHandler(callback_link, pattern=r"^link:"))
     app.add_handler(CallbackQueryHandler(callback_stats, pattern=r"^stats:"))
+    app.add_handler(CallbackQueryHandler(callback_graph, pattern=r"^graph:"))
+    app.add_handler(CallbackQueryHandler(callback_geo, pattern=r"^geo:"))
+    app.add_handler(CallbackQueryHandler(callback_alert, pattern=r"^alert:"))
+    app.add_handler(CallbackQueryHandler(callback_version, pattern=r"^version:"))
 
-    # Document handler (zip uploads)
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
     return app
 
 
 async def setup_bot_ui(bot: Bot) -> None:
-    """Configure bot commands list and menu button (called after bot starts)."""
     try:
         await bot.set_my_commands([
             BotCommand("menu", "Ouvrir le menu principal"),
             BotCommand("newlink", "Générer un nouveau lien"),
-            BotCommand("campaigns", "Voir mes campagnes"),
+            BotCommand("list", "Voir mes campagnes"),
             BotCommand("upload", "Uploader une nouvelle campagne"),
             BotCommand("domains", "Voir mes domaines"),
             BotCommand("stats", "Statistiques"),
@@ -1003,7 +1364,6 @@ async def setup_bot_ui(bot: Bot) -> None:
 
 
 async def set_bot_username(bot: Bot) -> None:
-    """Fetch and cache the bot username (called after bot starts)."""
     global _bot_username
     try:
         me = await bot.get_me()
@@ -1017,14 +1377,11 @@ async def set_bot_username(bot: Bot) -> None:
 # ──────────────────────────────────────────────
 
 async def send_login_success(username: str, ip: str) -> None:
-    """Notify all admins of a successful login (best-effort, does not raise)."""
     if _bot_instance is None:
         return
-
     admin_ids = settings.get_admin_ids()
     if not admin_ids:
         return
-
     now_str = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     message = (
         f"✅ <b>Connexion réussie</b>\n\n"
@@ -1032,13 +1389,8 @@ async def send_login_success(username: str, ip: str) -> None:
         f"IP : <code>{ip}</code>\n"
         f"Heure : {now_str}"
     )
-
     for admin_id in admin_ids:
         try:
-            await _bot_instance.send_message(
-                chat_id=admin_id,
-                text=message,
-                parse_mode="HTML",
-            )
+            await _bot_instance.send_message(chat_id=admin_id, text=message, parse_mode="HTML")
         except Exception as exc:
             logger.warning("Could not send login-success notification to %s: %s", admin_id, exc)

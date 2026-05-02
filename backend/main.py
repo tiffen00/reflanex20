@@ -1,8 +1,9 @@
 import asyncio
 import logging
-import os
+import posixpath
 import re
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional
 
@@ -16,10 +17,9 @@ from fastapi import (
     UploadFile,
     File,
 )
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from sqlalchemy.orm import Session
 
 from backend.auth import (
     require_auth,
@@ -30,10 +30,13 @@ from backend.auth import (
     get_session_secret,
 )
 from backend.config import settings, get_resolved_token
-from backend.database import Campaign, Link, get_db, init_db
+import backend.dao as dao
+from backend.db import get_supabase
+from backend.geoip import lookup_country
 from backend.mime import guess_inline_content_type
 from backend.rate_limit import login_rate_limiter
-from backend.storage import StorageError, delete_campaign_files, get_file_path, validate_and_unzip
+import backend.storage_supabase as storage_sb
+from backend.storage import StorageError
 from backend.utils import generate_slug, slugify
 
 logger = logging.getLogger(__name__)
@@ -47,7 +50,6 @@ def _serve_html_with_prefix(filename: str) -> HTMLResponse:
     if not page.exists():
         raise HTTPException(status_code=404, detail=f"{filename} not found")
     content = page.read_text(encoding="utf-8")
-    # Sanitize prefix: only allow URL-safe path chars (alphanumeric, /, -, _)
     safe_prefix = re.sub(r"[^a-zA-Z0-9/_\-]", "", settings.ADMIN_PATH_PREFIX)
     content = content.replace("__ADMIN_PREFIX__", safe_prefix)
     return HTMLResponse(content)
@@ -59,9 +61,6 @@ def _serve_html_with_prefix(filename: str) -> HTMLResponse:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Ensure DB tables exist
-    init_db()
-
     # Initialise session secret (generate + persist if needed)
     get_session_secret()
 
@@ -78,7 +77,7 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("🔑 API_TOKEN is set from environment.")
 
-    # Boot configuration validation — log clearly what is missing
+    # Boot configuration validation
     missing: list[str] = []
     if not settings.TELEGRAM_BOT_TOKEN:
         logger.warning("❌ TELEGRAM_BOT_TOKEN is missing — login won't work")
@@ -105,6 +104,18 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("✅ WEB_PASSWORD: set")
 
+    if not settings.SUPABASE_URL:
+        logger.warning("❌ SUPABASE_URL is missing — database won't work")
+        missing.append("SUPABASE_URL")
+    else:
+        logger.info("✅ SUPABASE_URL: set")
+
+    if not settings.SUPABASE_SERVICE_KEY:
+        logger.warning("❌ SUPABASE_SERVICE_KEY is missing — database won't work")
+        missing.append("SUPABASE_SERVICE_KEY")
+    else:
+        logger.info("✅ SUPABASE_SERVICE_KEY: set")
+
     if missing:
         logger.warning("⚠️  Missing env vars: %s", ", ".join(missing))
     else:
@@ -121,12 +132,10 @@ async def lifespan(app: FastAPI):
         tg_app = build_application()
         bot_task = asyncio.create_task(_run_bot(tg_app))
         logger.info("🤖 Telegram bot started.")
-        # Fetch and cache bot username (best-effort)
         try:
             await set_bot_username(tg_app.bot)
         except Exception as exc:
             logger.warning("Could not cache bot username: %s", exc)
-        # Configure bot commands and menu button (best-effort)
         try:
             await setup_bot_ui(tg_app.bot)
         except Exception as exc:
@@ -149,7 +158,7 @@ async def _run_bot(tg_app):
     await tg_app.start()
     await tg_app.updater.start_polling(drop_pending_updates=True)
     try:
-        await asyncio.Event().wait()  # run forever
+        await asyncio.Event().wait()
     finally:
         await tg_app.updater.stop()
         await tg_app.stop()
@@ -160,15 +169,14 @@ async def _run_bot(tg_app):
 # App
 # ──────────────────────────────────────────────
 
-app = FastAPI(title="Reflanex20", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="Reflanex20", version="2.0.0", lifespan=lifespan)
 
-# Static frontend
 if FRONTEND_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
 
 
 # ──────────────────────────────────────────────
-# Global exception handler — always return JSON
+# Global exception handler
 # ──────────────────────────────────────────────
 
 @app.exception_handler(Exception)
@@ -193,25 +201,20 @@ class LinkOut(BaseModel):
     id: int
     slug: str
     domain: Optional[str]
-    clicks: int
+    total_clicks: int
     is_active: bool
     full_url: str
-
-    class Config:
-        from_attributes = True
 
 
 class CampaignOut(BaseModel):
     id: int
     name: str
-    original_filename: str
+    original_filename: Optional[str]
     created_at: str
     storage_path: str
     entry_file: str
+    version: int
     links: List[LinkOut] = []
-
-    class Config:
-        from_attributes = True
 
 
 class NewLinkBody(BaseModel):
@@ -233,39 +236,42 @@ def _make_full_url(slug: str, domain: Optional[str]) -> str:
     return f"{settings.PUBLIC_BASE_URL}/c/{slug}/"
 
 
-def _link_out(link: Link) -> LinkOut:
+def _link_out(link: dict) -> LinkOut:
+    stats = dao.get_link_stats(link["id"])
     return LinkOut(
-        id=link.id,
-        slug=link.slug,
-        domain=link.domain,
-        clicks=link.clicks,
-        is_active=link.is_active,
-        full_url=_make_full_url(link.slug, link.domain),
+        id=link["id"],
+        slug=link["slug"],
+        domain=link.get("domain"),
+        total_clicks=stats.get("total_clicks", 0),
+        is_active=link.get("is_active", True),
+        full_url=_make_full_url(link["slug"], link.get("domain")),
     )
 
 
-def _campaign_out(c: Campaign) -> CampaignOut:
+def _campaign_out(c: dict) -> CampaignOut:
+    links = dao.list_links_for_campaign(c["id"])
     return CampaignOut(
-        id=c.id,
-        name=c.name,
-        original_filename=c.original_filename,
-        created_at=c.created_at.isoformat() if c.created_at else "",
-        storage_path=c.storage_path,
-        entry_file=c.entry_file,
-        links=[_link_out(l) for l in c.links],
+        id=c["id"],
+        name=c["name"],
+        original_filename=c.get("original_filename"),
+        created_at=c.get("created_at", ""),
+        storage_path=c.get("storage_path", ""),
+        entry_file=c.get("entry_file", ""),
+        version=c.get("version", 1),
+        links=[_link_out(l) for l in links],
     )
 
 
-def _unique_slug(db: Session) -> str:
+def _unique_slug() -> str:
     for _ in range(20):
         slug = generate_slug()
-        if not db.query(Link).filter(Link.slug == slug).first():
+        if not dao.get_link_by_slug(slug):
             return slug
     raise HTTPException(status_code=500, detail="Could not generate unique slug")
 
 
 # ──────────────────────────────────────────────
-# Public routes (always at root)
+# Public routes
 # ──────────────────────────────────────────────
 
 @app.get("/healthz")
@@ -274,8 +280,24 @@ async def healthz():
 
 
 @app.get("/api/diag")
-async def diag(db: Session = Depends(get_db)):
+async def diag():
     """Public diagnostic endpoint — returns config status without exposing secrets."""
+    try:
+        sb = get_supabase()
+        sb.table("campaigns").select("id").limit(1).execute()
+        supabase_db = "ok"
+    except Exception as e:
+        logger.warning("Supabase DB check failed: %s", e)
+        supabase_db = f"error: {type(e).__name__}"
+
+    try:
+        sb = get_supabase()
+        sb.storage.from_("campaigns").list("")
+        supabase_storage = "ok"
+    except Exception as e:
+        logger.warning("Supabase storage check failed: %s", e)
+        supabase_storage = f"error: {type(e).__name__}"
+
     telegram_status: str
     if not settings.TELEGRAM_BOT_TOKEN:
         telegram_status = "not_configured"
@@ -291,36 +313,81 @@ async def diag(db: Session = Depends(get_db)):
     session_ok = bool(get_session_secret())
 
     return {
+        "supabase_db": supabase_db,
+        "supabase_storage": supabase_storage,
         "telegram_bot": telegram_status,
         "telegram_admins_count": len(admin_ids),
         "session_secret": "ok" if session_ok else "missing",
         "domains_count": len(domains),
         "public_base_url": settings.PUBLIC_BASE_URL,
-        "version": "1.0.0",
+        "version": "2.0.0",
     }
 
 
 @app.get("/", include_in_schema=False)
 async def serve_root():
-    """Root returns a generic 404 — no hint that an admin panel exists."""
     return JSONResponse({"detail": "Page introuvable"}, status_code=404)
 
 
 @app.get("/c/{slug}", include_in_schema=False)
 @app.get("/c/{slug}/", include_in_schema=False)
-async def serve_slug_root(slug: str, request: Request, db: Session = Depends(get_db)):
-    return await _serve_campaign_file(slug, "", request, db)
+async def serve_slug_root(slug: str, request: Request):
+    return await _serve_campaign_file(slug, "", request)
 
 
 @app.get("/c/{slug}/{path:path}", include_in_schema=False)
-async def serve_slug_path(slug: str, path: str, request: Request, db: Session = Depends(get_db)):
-    return await _serve_campaign_file(slug, path, request, db)
+async def serve_slug_path(slug: str, path: str, request: Request):
+    return await _serve_campaign_file(slug, path, request)
 
 
-async def _serve_campaign_file(slug: str, path: str, request: Request, db: Session):
-    link: Optional[Link] = db.query(Link).filter(Link.slug == slug).first()
-    if not link or not link.is_active:
+async def _serve_campaign_file(slug: str, path: str, request: Request):
+    link = dao.get_link_by_slug(slug)
+    if not link or not link.get("is_active"):
         raise HTTPException(status_code=404, detail="Lien introuvable ou désactivé")
+
+    # Check click_limit
+    if link.get("click_limit"):
+        stats = dao.get_link_stats(link["id"])
+        if stats.get("total_clicks", 0) >= link["click_limit"]:
+            raise HTTPException(status_code=403, detail="Limite de clics atteinte")
+
+    # Check expiry
+    if link.get("expires_at"):
+        raw = link["expires_at"]
+        # Normalize 'Z' suffix and ensure timezone-aware parsing
+        if raw.endswith("Z"):
+            raw = raw[:-1] + "+00:00"
+        expires: Optional[datetime] = None
+        try:
+            expires = datetime.fromisoformat(raw)
+        except ValueError:
+            try:
+                # Strip sub-second precision before re-parsing
+                base = raw.split(".")[0] if "." in raw else raw
+                expires = datetime.fromisoformat(base + "+00:00")
+            except ValueError:
+                logger.warning("Could not parse expires_at value: %s", link["expires_at"])
+        if expires and datetime.now(timezone.utc) > expires:
+            raise HTTPException(status_code=403, detail="Lien expiré")
+
+    # Geo-blocking
+    ip = (
+        request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+        or (request.client.host if request.client else "unknown")
+    )
+    geo_rule = dao.get_geo_rule(link["id"])
+    country: Optional[str] = None
+    if geo_rule:
+        country = await lookup_country(ip)
+        if country:
+            if geo_rule["mode"] == "block" and country in geo_rule["countries"]:
+                raise HTTPException(status_code=403, detail="Accès refusé depuis votre pays")
+            elif geo_rule["mode"] == "allow" and country not in geo_rule["countries"]:
+                raise HTTPException(status_code=403, detail="Accès refusé depuis votre pays")
+
+    campaign = dao.get_campaign(link["campaign_id"])
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campagne introuvable")
 
     # Warn if host not in configured domains
     host = request.headers.get("host", "").split(":")[0]
@@ -329,57 +396,92 @@ async def _serve_campaign_file(slug: str, path: str, request: Request, db: Sessi
     if valid_hostnames and host not in valid_hostnames:
         logger.warning("Request from unlisted host: %s (configured: %s)", host, valid_hostnames)
 
-    campaign: Optional[Campaign] = link.campaign
-    if not campaign:
-        raise HTTPException(status_code=404, detail="Campagne introuvable")
-
-    # Increment clicks
-    link.clicks += 1
-    db.commit()
-
-    # Resolve file
+    # Resolve file path
     path_stripped = path.strip("/")
     if not path_stripped:
-        # Root access — use entry_file
-        if not campaign.entry_file:
-            raise HTTPException(
-                status_code=404,
-                detail="Fichier d'entrée non défini pour cette campagne",
-            )
-        file_rel = campaign.entry_file
+        file_rel = campaign.get("entry_file", "")
+        if not file_rel:
+            raise HTTPException(status_code=404, detail="Fichier d'entrée non défini pour cette campagne")
     else:
         file_rel = path_stripped
 
-    file_path = get_file_path(campaign.storage_path, file_rel)
+    # Security: prevent path traversal — check every component for '..'
+    normalized = posixpath.normpath(file_rel)
+    path_components = normalized.split("/")
+    if ".." in path_components or normalized.startswith("/"):
+        raise HTTPException(status_code=403, detail="Chemin invalide")
 
-    if file_path is None:
+    # Download from Supabase Storage
+    file_bytes = storage_sb.download_file(campaign["storage_path"], file_rel)
+    if file_bytes is None:
         raise HTTPException(status_code=404, detail="Fichier introuvable")
 
-    # Re-validate path is within storage as belt-and-suspenders check
-    storage_base = os.path.realpath(campaign.storage_path)
-    resolved_path = os.path.realpath(file_path)
-    if not resolved_path.startswith(storage_base + os.sep):
-        raise HTTPException(status_code=403, detail="Accès refusé")
+    # Record click (non-blocking)
+    ua = request.headers.get("user-agent", "")
+    referer = request.headers.get("referer")
+    if country is None:
+        country = await lookup_country(ip)
+    asyncio.create_task(_record_click_and_check_alerts(link["id"], ip, ua, country, referer))
 
-    # Detect MIME and always serve inline (never force download)
-    mime = guess_inline_content_type(file_path)
-    return FileResponse(
-        resolved_path,
+    mime = guess_inline_content_type(Path(file_rel))
+    return Response(
+        content=file_bytes,
         media_type=mime,
-        content_disposition_type="inline",
+        headers={"Content-Disposition": "inline"},
     )
 
 
+async def _record_click_and_check_alerts(
+    link_id: int,
+    ip: str,
+    ua: str,
+    country: Optional[str],
+    referer: Optional[str],
+):
+    try:
+        dao.record_click(link_id, ip, ua, country, referer)
+        if settings.ENABLE_CLICK_ALERTS:
+            await _check_click_alerts(link_id)
+    except Exception as e:
+        logger.warning("Error recording click: %s", e)
+
+
+async def _check_click_alerts(link_id: int):
+    try:
+        alerts = dao.get_alerts_for_link(link_id)
+        if not alerts:
+            return
+        stats = dao.get_link_stats(link_id)
+        total = stats.get("total_clicks", 0)
+        for alert in alerts:
+            if not alert.get("notified") and total >= alert["threshold"]:
+                from backend.telegram_bot import _bot_instance
+                if _bot_instance:
+                    link = dao.get_link_by_id(link_id)
+                    campaign = dao.get_campaign(link["campaign_id"]) if link else None
+                    for admin_id in settings.get_admin_ids():
+                        try:
+                            msg = (
+                                f"🔔 <b>Alerte clics atteinte</b>\n\n"
+                                f"Le lien <code>{link['slug'] if link else link_id}</code>"
+                                f"{' (campagne ' + campaign['name'] + ')' if campaign else ''}\n"
+                                f"a dépassé {alert['threshold']} clics !\n\n"
+                                f"Total actuel : {total}"
+                            )
+                            await _bot_instance.send_message(admin_id, msg, parse_mode="HTML")
+                        except Exception as e:
+                            logger.warning("Could not send alert to admin %s: %s", admin_id, e)
+                dao.mark_alert_notified(alert["id"])
+    except Exception as e:
+        logger.warning("Error checking click alerts: %s", e)
+
+
 # ──────────────────────────────────────────────
-# Admin router — all routes behind ADMIN_PATH_PREFIX
+# Admin router
 # ──────────────────────────────────────────────
 
 admin_router = APIRouter()
 
-
-# ──────────────────────────────────────────────
-# Auth helpers
-# ──────────────────────────────────────────────
 
 def _get_client_ip(request: Request) -> str:
     forwarded_for = request.headers.get("x-forwarded-for")
@@ -408,9 +510,7 @@ async def serve_login():
 async def serve_dashboard(request: Request):
     session_token = request.cookies.get("session")
     if not session_token or not verify_session_token(session_token):
-        return RedirectResponse(
-            url=f"{settings.ADMIN_PATH_PREFIX}/login", status_code=302
-        )
+        return RedirectResponse(url=f"{settings.ADMIN_PATH_PREFIX}/login", status_code=302)
     return _serve_html_with_prefix("index.html")
 
 
@@ -423,7 +523,6 @@ async def auth_login(body: LoginBody, request: Request):
     try:
         ip = _get_client_ip(request)
 
-        # Rate limit per IP
         if not login_rate_limiter.is_allowed(ip):
             retry_after = login_rate_limiter.retry_after(ip)
             logger.warning("Rate limit exceeded for login from IP %s", ip)
@@ -433,27 +532,20 @@ async def auth_login(body: LoginBody, request: Request):
                 headers={"Retry-After": str(retry_after)},
             )
 
-        # Verify credentials (constant-time)
         if not verify_web_credentials(body.username, body.password):
             logger.warning("Failed login attempt for username=%r from IP %s", body.username, ip)
             return JSONResponse({"detail": "Invalid username or password"}, status_code=401)
 
         logger.info("Successful login for username=%r from IP %s", body.username, ip)
 
-        # Send success notification (best-effort — never blocks login)
         try:
             from backend.telegram_bot import send_login_success
             await send_login_success(body.username, ip)
         except RuntimeError as exc:
-            logger.warning(
-                "Bot not ready for login notification (RuntimeError): %s. "
-                "Vérifiez TELEGRAM_BOT_TOKEN et redéployez.",
-                exc,
-            )
+            logger.warning("Bot not ready for login notification (RuntimeError): %s.", exc)
         except Exception as exc:
             logger.warning("Could not send login success notification: %s", exc)
 
-        # Issue session JWT cookie
         token = create_session_token(body.username)
         secure = _is_secure(request)
         resp = JSONResponse({"ok": True})
@@ -496,47 +588,53 @@ async def auth_me(payload: dict = Depends(require_session)):
 async def upload_campaign(
     file: UploadFile = File(...),
     name: str = Form(...),
-    db: Session = Depends(get_db),
+    allow_new_version: bool = Form(False),
 ):
     if not name.strip():
         raise HTTPException(status_code=400, detail="Campaign name is required")
 
-    if db.query(Campaign).filter(Campaign.name == name.strip()).first():
-        raise HTTPException(status_code=409, detail="Une campagne avec ce nom existe déjà")
-
+    campaign_name = name.strip()
     zip_bytes = await file.read()
+
+    existing = dao.get_campaign_by_name(campaign_name)
+    if existing and not allow_new_version:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Une campagne avec ce nom existe déjà (version {existing['version']}). "
+                   "Utilisez allow_new_version=true pour créer une nouvelle version.",
+        )
+
+    version = (existing["version"] + 1) if existing else 1
+    slug_dir = slugify(campaign_name)
+
     try:
-        slug_dir = slugify(name.strip())
-        storage_path, entry_file = validate_and_unzip(zip_bytes, slug_dir)
+        storage_path, entry_file = storage_sb.upload_campaign(zip_bytes, slug_dir, version)
     except StorageError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-    campaign = Campaign(
-        name=name.strip(),
-        original_filename=file.filename or "upload.zip",
+    campaign = dao.create_campaign(
+        name=campaign_name,
         storage_path=storage_path,
         entry_file=entry_file,
+        original_filename=file.filename or "upload.zip",
+        version=version,
     )
-    db.add(campaign)
-    db.commit()
-    db.refresh(campaign)
 
-    return {"campaign_id": campaign.id, "name": campaign.name}
+    if existing:
+        dao.set_current_version(campaign["id"])
+
+    return {"campaign_id": campaign["id"], "name": campaign["name"], "version": version}
 
 
 @admin_router.get("/api/campaigns", dependencies=[Depends(require_auth)])
-def list_campaigns(db: Session = Depends(get_db)):
-    campaigns = db.query(Campaign).all()
+def list_campaigns():
+    campaigns = dao.list_campaigns()
     return [_campaign_out(c) for c in campaigns]
 
 
 @admin_router.post("/api/campaigns/{campaign_id}/links", dependencies=[Depends(require_auth)])
-def create_link(
-    campaign_id: int,
-    body: NewLinkBody,
-    db: Session = Depends(get_db),
-):
-    campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
+def create_link(campaign_id: int, body: NewLinkBody):
+    campaign = dao.get_campaign(campaign_id)
     if not campaign:
         raise HTTPException(status_code=404, detail="Campagne introuvable")
 
@@ -550,36 +648,34 @@ def create_link(
                 detail=f"Domaine non configuré. Domaines disponibles: {', '.join(valid_domains)}",
             )
 
-    slug = _unique_slug(db)
-    link = Link(slug=slug, campaign_id=campaign.id, domain=domain)
-    db.add(link)
-    db.commit()
-    db.refresh(link)
-
+    slug = _unique_slug()
+    link = dao.create_link(slug, campaign_id, domain)
     return {"slug": slug, "full_url": _make_full_url(slug, domain)}
 
 
 @admin_router.delete("/api/links/{slug}", dependencies=[Depends(require_auth)])
-def deactivate_link(slug: str, db: Session = Depends(get_db)):
-    link = db.query(Link).filter(Link.slug == slug).first()
+def deactivate_link(slug: str):
+    link = dao.get_link_by_slug(slug)
     if not link:
         raise HTTPException(status_code=404, detail="Lien introuvable")
-    link.is_active = False
-    db.commit()
+    dao.deactivate_link(slug)
     return {"slug": slug, "is_active": False}
 
 
 @admin_router.delete("/api/campaigns/{campaign_id}", dependencies=[Depends(require_auth)])
-def delete_campaign(campaign_id: int, db: Session = Depends(get_db)):
-    campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
+def delete_campaign(campaign_id: int):
+    campaign = dao.get_campaign(campaign_id)
     if not campaign:
         raise HTTPException(status_code=404, detail="Campagne introuvable")
 
-    storage_path = campaign.storage_path
-    db.delete(campaign)
-    db.commit()
+    storage_path = campaign.get("storage_path", "")
+    dao.delete_campaign(campaign_id)
 
-    delete_campaign_files(storage_path)
+    try:
+        storage_sb.delete_campaign_storage(storage_path)
+    except Exception as exc:
+        logger.warning("Error deleting campaign storage: %s", exc)
+
     return {"deleted": campaign_id}
 
 
@@ -594,7 +690,6 @@ def get_domains():
 
 @admin_router.get("/api/bot/status", dependencies=[Depends(require_auth)])
 async def bot_status():
-    """Returns Telegram bot status information."""
     if not settings.TELEGRAM_BOT_TOKEN:
         return {
             "configured": False,
@@ -602,7 +697,6 @@ async def bot_status():
             "admin_ids_count": 0,
             "last_update_seconds_ago": None,
         }
-
     try:
         from backend.telegram_bot import _bot_instance, _bot_username
         if _bot_instance is None:
@@ -630,7 +724,6 @@ async def bot_status():
 
 @admin_router.post("/api/bot/test", dependencies=[Depends(require_auth)])
 async def bot_test():
-    """Send a test message to all Telegram admins."""
     if not settings.TELEGRAM_BOT_TOKEN:
         return JSONResponse(
             {"success": False, "error": "Bot non configuré (TELEGRAM_BOT_TOKEN manquant)"},
@@ -647,12 +740,8 @@ async def bot_test():
     try:
         from backend.telegram_bot import _bot_instance
         if _bot_instance is None:
-            return JSONResponse(
-                {"success": False, "error": "Bot non démarré"},
-                status_code=503,
-            )
+            return JSONResponse({"success": False, "error": "Bot non démarré"}, status_code=503)
 
-        from datetime import datetime, timezone
         now_str = datetime.now(tz=timezone.utc).strftime("%d/%m/%Y %H:%M %Z")
         message = (
             "✅ <b>Test depuis le dashboard Reflanex20</b>\n\n"
@@ -663,11 +752,7 @@ async def bot_test():
         sent = 0
         for admin_id in admin_ids:
             try:
-                await _bot_instance.send_message(
-                    chat_id=admin_id,
-                    text=message,
-                    parse_mode="HTML",
-                )
+                await _bot_instance.send_message(chat_id=admin_id, text=message, parse_mode="HTML")
                 sent += 1
             except Exception as exc:
                 logger.warning("Could not send test message to %s: %s", admin_id, exc)
