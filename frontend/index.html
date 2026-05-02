@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Reflanex20 — Campaign Manager</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <!-- Login overlay -->
+  <div id="login-overlay" class="overlay">
+    <div class="login-card">
+      <div class="logo">🔗 Reflanex20</div>
+      <p class="subtitle">Campaign Link Manager</p>
+      <input
+        type="password"
+        id="token-input"
+        placeholder="API Token"
+        autocomplete="off"
+      />
+      <button id="login-btn">Se connecter</button>
+      <p id="login-error" class="error hidden">Token invalide.</p>
+    </div>
+  </div>
+
+  <!-- Main app -->
+  <div id="app" class="hidden">
+    <nav class="navbar">
+      <span class="nav-logo">🔗 Reflanex20</span>
+      <div class="nav-tabs">
+        <button class="nav-tab active" data-tab="upload">📤 Upload</button>
+        <button class="nav-tab" data-tab="campaigns">📋 Campagnes</button>
+      </div>
+      <button id="logout-btn" class="btn-ghost">Déconnexion</button>
+    </nav>
+
+    <!-- Upload tab -->
+    <section id="tab-upload" class="tab-content active">
+      <div class="card">
+        <h2>Nouvelle campagne</h2>
+        <div class="form-group">
+          <label for="campaign-name">Nom de la campagne</label>
+          <input type="text" id="campaign-name" placeholder="ex: promo-ete-2025" />
+        </div>
+        <div
+          id="drop-zone"
+          class="drop-zone"
+          tabindex="0"
+          role="button"
+          aria-label="Zone de dépôt de fichier zip"
+        >
+          <div class="drop-icon">📦</div>
+          <p>Glisse-dépose ton <strong>.zip</strong> ici</p>
+          <p class="drop-hint">ou clique pour choisir</p>
+          <input type="file" id="file-input" accept=".zip" hidden />
+        </div>
+        <div id="file-info" class="file-info hidden"></div>
+        <button id="upload-btn" class="btn-primary" disabled>Uploader</button>
+        <div id="upload-result" class="result hidden"></div>
+      </div>
+    </section>
+
+    <!-- Campaigns tab -->
+    <section id="tab-campaigns" class="tab-content hidden">
+      <div class="card">
+        <div class="section-header">
+          <h2>Campagnes</h2>
+          <button id="refresh-btn" class="btn-ghost">🔄 Actualiser</button>
+        </div>
+        <div id="campaigns-list"></div>
+      </div>
+
+      <!-- Links panel (shown per campaign) -->
+      <div id="links-panel" class="card hidden">
+        <div class="section-header">
+          <h2 id="links-title">Liens</h2>
+          <button id="close-links-btn" class="btn-ghost">✕ Fermer</button>
+        </div>
+        <div id="new-link-form" class="form-inline">
+          <select id="domain-select">
+            <option value="">URL par défaut</option>
+          </select>
+          <button id="generate-link-btn" class="btn-primary">+ Nouveau lien</button>
+        </div>
+        <div id="links-list"></div>
+      </div>
+    </section>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
