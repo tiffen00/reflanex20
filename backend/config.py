@@ -14,10 +14,21 @@ class Settings(BaseSettings):
     TELEGRAM_BOT_TOKEN: str = ""
     TELEGRAM_ADMIN_IDS: str = ""
     DOMAINS: str = ""
-    DATABASE_URL: str = "sqlite:///./storage/app.db"
-    STORAGE_DIR: str = "./storage/campaigns"
     MAX_ZIP_SIZE_MB: int = 50
     PUBLIC_BASE_URL: str = "http://localhost:8000"
+
+    # Supabase
+    SUPABASE_URL: str = ""
+    SUPABASE_ANON_KEY: str = ""
+    SUPABASE_SERVICE_KEY: str = ""
+    SUPABASE_BUCKET: str = "campaigns"
+
+    # GeoIP
+    GEOIP_PROVIDER: str = "ipapi"  # "ipapi" or "none"
+
+    # Features
+    ENABLE_CLICK_ALERTS: bool = True
+    SEED_DEFAULT_CAMPAIGN: bool = True
 
     # Web auth
     WEB_USERNAME: str = "admin"
