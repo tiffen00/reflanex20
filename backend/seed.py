@@ -15,6 +15,44 @@ BUCKET = "campaigns"
 AR24_TEMPLATE_DIR = Path(__file__).parent.parent / "examples" / "ar24-template"
 
 
+def _is_schema_error(exc: Exception) -> bool:
+    """Return True if the exception indicates a missing DB table (PostgreSQL 42P01).
+
+    The Supabase PostgREST client serialises the SQLSTATE into the exception
+    message, so string-matching on ``"42P01"`` is the correct approach here.
+    We also check a ``code`` attribute for forward-compatibility.
+    """
+    # Structured code attribute (some supabase-py versions expose this)
+    if str(getattr(exc, "code", "")).upper() == "42P01":
+        return True
+    msg = str(exc).lower()
+    return "42p01" in msg or ("relation" in msg and "does not exist" in msg)
+
+
+def _ensure_bucket_exists() -> None:
+    """
+    Verify that the ``campaigns`` storage bucket exists.
+    Auto-creates it (private) if it is missing.
+    Raises on unrecoverable errors so the caller can abort early.
+    """
+    sb = get_supabase()
+    try:
+        buckets = sb.storage.list_buckets()
+        bucket_ids = [b.id for b in buckets]
+    except Exception as exc:
+        logger.warning("Could not list storage buckets (skipping bucket check): %s", exc)
+        return
+
+    if BUCKET not in bucket_ids:
+        logger.info("Bucket '%s' not found — attempting auto-creation …", BUCKET)
+        try:
+            sb.storage.create_bucket(BUCKET, {"public": False})
+            logger.info("✅ Auto-created bucket '%s'", BUCKET)
+        except Exception as exc:
+            logger.error("❌ Could not create bucket '%s': %s", BUCKET, exc)
+            raise
+
+
 def _upload_directory_to_storage(src_dir: Path, campaign_name: str, version: int) -> tuple[str, str]:
     """
     Upload all files from src_dir into Supabase Storage under
@@ -48,7 +86,7 @@ def _upload_directory_to_storage(src_dir: Path, campaign_name: str, version: int
             try:
                 sb.storage.from_(BUCKET).update(upload_path, data)
             except Exception as exc2:
-                logger.error("Could not seed file %s: %s", upload_path, exc2)
+                logger.error("❌ Upload failed: %s reason=%s", upload_path, exc2)
 
         if not entry_file and filepath.name.lower() in ("index.html", "index.php", "index.htm"):
             entry_file = rel
@@ -81,12 +119,28 @@ async def ensure_protected_campaign() -> None:
     src_dir = AR24_TEMPLATE_DIR
     if not src_dir.exists():
         logger.error(
-            "AR24 template source missing at %s - cannot seed protected campaign",
+            "❌ AR24 template source missing at %s — cannot seed protected campaign",
             src_dir,
         )
         return
 
-    campaign = dao.get_campaign_by_name(name)
+    # Ensure the storage bucket is present before any DB/storage operations
+    try:
+        _ensure_bucket_exists()
+    except Exception:
+        # Error already logged inside _ensure_bucket_exists(); abort seed.
+        return
+
+    try:
+        campaign = dao.get_campaign_by_name(name)
+    except Exception as exc:
+        if _is_schema_error(exc):
+            logger.error(
+                "❌ Schema not migrated. Run supabase/schema.sql first. Detail: %s", exc
+            )
+        else:
+            logger.error("❌ Could not query campaigns table: %s", exc)
+        return
 
     if campaign is None:
         logger.info("Seeding protected campaign '%s' from %s …", name, src_dir)
@@ -101,7 +155,12 @@ async def ensure_protected_campaign() -> None:
             )
             logger.info("✅ Seeded protected campaign '%s' (storage_path=%s)", name, storage_path)
         except Exception as exc:
-            logger.error("Failed to seed protected campaign '%s': %s", name, exc)
+            if _is_schema_error(exc):
+                logger.error(
+                    "❌ Schema not migrated. Run supabase/schema.sql first. Detail: %s", exc
+                )
+            else:
+                logger.error("❌ Failed to seed protected campaign '%s': %s", name, exc)
         return
 
     # Campaign already exists — ensure protection flag is set
@@ -125,6 +184,6 @@ async def ensure_protected_campaign() -> None:
             dao.update_campaign_storage(campaign["id"], new_storage_path, entry_file)
             logger.info("✅ Re-uploaded AR24 storage to '%s'", new_storage_path)
         except Exception as exc:
-            logger.error("Failed to re-upload AR24 storage: %s", exc)
+            logger.error("❌ Failed to re-upload AR24 storage: %s", exc)
     else:
         logger.info("✅ Protected campaign '%s' is present and complete.", name)
