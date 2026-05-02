@@ -360,7 +360,9 @@ async def _serve_campaign_file(slug: str, path: str, request: Request):
         try:
             expires = datetime.fromisoformat(raw)
         except ValueError:
-            expires = datetime.fromisoformat(raw.split(".")[0] + "+00:00")
+            # Strip microseconds if present before appending offset
+            base = raw.split(".")[0] if "." in raw else raw
+            expires = datetime.fromisoformat(base + "+00:00")
         if datetime.now(timezone.utc) > expires:
             raise HTTPException(status_code=403, detail="Lien expiré")
 
@@ -401,7 +403,7 @@ async def _serve_campaign_file(slug: str, path: str, request: Request):
 
     # Security: prevent path traversal using normpath containment check
     normalized = posixpath.normpath(file_rel)
-    if normalized.startswith("..") or "/.." in normalized or normalized == ".":
+    if normalized in (".", "..") or normalized.startswith("..") or "/.." in normalized:
         raise HTTPException(status_code=403, detail="Chemin invalide")
 
     # Download from Supabase Storage
