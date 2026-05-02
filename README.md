@@ -72,7 +72,7 @@ bash start.sh
 uvicorn backend.main:app --reload
 ```
 
-Ouvre http://localhost:8000 — entre ton `API_TOKEN` (affiché dans les logs au 1er démarrage si vide).
+Ouvre http://localhost:8000 → tu es redirigé vers `/login`. Entre ton `WEB_USERNAME` et `WEB_PASSWORD`, puis le code OTP reçu sur Telegram.
 
 ---
 
@@ -86,8 +86,34 @@ Ouvre http://localhost:8000 — entre ton `API_TOKEN` (affiché dans les logs au
    - `TELEGRAM_ADMIN_IDS` — ton ID Telegram (voir @userinfobot)
    - `DOMAINS` — tes domaines séparés par des virgules
    - `PUBLIC_BASE_URL` — `https://<ton-service>.onrender.com`
-5. `API_TOKEN` est **auto-généré** par Render (`generateValue: true`) — retrouve-le dans le dashboard Render → ton service → **Environment** → `API_TOKEN`
+   - `WEB_USERNAME` — ton identifiant de connexion web
+   - `WEB_PASSWORD` — ton mot de passe (en clair, sera hashé en mémoire)
+5. `API_TOKEN` et `SESSION_SECRET` sont **auto-générés** par Render (`generateValue: true`)
 6. Clique **Deploy** — Render installe les deps, monte le disque `/opt/render/project/src/storage`, et démarre avec `bash start.sh`
+
+---
+
+## 🔐 Authentification
+
+Reflanex20 utilise une authentification 2 étapes pour l'interface web :
+
+1. **Username + Password** (configurés dans les variables d'env Render)
+2. **Code OTP à 5 chiffres** envoyé via votre bot Telegram aux IDs admin
+
+### Variables à configurer
+
+- `WEB_USERNAME` : votre identifiant
+- `WEB_PASSWORD` : votre mot de passe (en clair OK pour MVP, sera hashé en mémoire au boot)
+- `SESSION_SECRET` : auto-généré par Render, ne pas modifier manuellement
+- `TELEGRAM_BOT_TOKEN` et `TELEGRAM_ADMIN_IDS` : déjà requis pour le bot
+
+### Pour les scripts / API directe
+
+L'ancien `X-API-Token` reste disponible pour les appels API non-interactifs (curl, scripts, automatisation).
+
+```bash
+curl -H "X-API-Token: <votre-token>" https://reflanex20.onrender.com/api/campaigns
+```
 
 ---
 
@@ -118,6 +144,11 @@ Pour chaque domaine que tu veux utiliser :
 
 ### Via l'interface web
 
+1. Accède à ton service → tu arrives sur `/login`
+2. Entre ton **username** et **mot de passe** (vars `WEB_USERNAME` / `WEB_PASSWORD`)
+3. Reçois le **code OTP à 5 chiffres** sur Telegram et entre-le
+4. Tu accèdes au dashboard → session valide 24 h
+
 | Action | Comment |
 |---|---|
 | Upload une campagne | Onglet **Upload** → nom + glisse le zip → **Uploader** |
@@ -125,6 +156,7 @@ Pour chaque domaine que tu veux utiliser :
 | Générer un lien | Clic **🔗 Liens** → choisir domaine → **+ Nouveau lien** |
 | Copier un lien | Bouton 📋 |
 | Désactiver un lien | Bouton **Désactiver** |
+| Se déconnecter | Bouton **Déconnexion** (haut droite) |
 
 ### Via le bot Telegram
 

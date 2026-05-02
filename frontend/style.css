@@ -24,6 +24,72 @@ body {
   min-height: 100vh;
 }
 
+/* ─── Auth pages (login / otp) ─── */
+.auth-page {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+}
+
+.auth-container {
+  width: min(420px, 94vw);
+  animation: fadeInUp .35s ease both;
+}
+
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(16px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.btn-full { width: 100%; }
+.text-center { text-align: center; }
+
+.subtitle-title {
+  text-align: center;
+  font-size: 1.3rem;
+  font-weight: 600;
+  margin-bottom: .25rem;
+}
+
+/* OTP inputs */
+.otp-inputs {
+  display: flex;
+  gap: .75rem;
+  justify-content: center;
+  margin: 1.25rem 0 .75rem;
+}
+
+.otp-digit {
+  width: 52px;
+  height: 60px;
+  text-align: center;
+  font-size: 1.6rem;
+  font-weight: 700;
+  border-radius: 10px;
+  caret-color: transparent;
+  padding: 0;
+}
+
+.otp-digit:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(108,99,255,.25);
+}
+
+.otp-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 1rem;
+  font-size: .88rem;
+}
+
+.otp-countdown {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
 /* ─── Overlay / Login ─── */
 .overlay {
   position: fixed; inset: 0;

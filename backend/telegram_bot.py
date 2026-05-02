@@ -1,5 +1,6 @@
 import io
 import logging
+from datetime import datetime, timezone
 from typing import Optional
 
 from telegram import (
@@ -24,6 +25,9 @@ from backend.storage import StorageError, validate_and_unzip
 from backend.utils import generate_slug, slugify
 
 logger = logging.getLogger(__name__)
+
+# Module-level bot instance set once the application is built
+_bot_instance: Optional[Bot] = None
 
 # States for conversation-like flow (stored in user_data)
 WAITING_FOR_ZIP = "waiting_for_zip"
@@ -408,11 +412,13 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ──────────────────────────────────────────────
 
 def build_application() -> Application:
+    global _bot_instance
     app = (
         Application.builder()
         .token(settings.TELEGRAM_BOT_TOKEN)
         .build()
     )
+    _bot_instance = app.bot
 
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("help", cmd_help))
@@ -427,3 +433,70 @@ def build_application() -> Application:
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
 
     return app
+
+
+# ──────────────────────────────────────────────
+# OTP / Auth notification helpers
+# ──────────────────────────────────────────────
+
+async def send_otp_to_admins(code: str, username: str, ip: str) -> None:
+    """Send the OTP code to all configured Telegram admin IDs."""
+    if _bot_instance is None:
+        raise RuntimeError("Telegram bot not initialised")
+
+    admin_ids = settings.get_admin_ids()
+    if not admin_ids:
+        raise RuntimeError("No TELEGRAM_ADMIN_IDS configured")
+
+    ttl_min = settings.OTP_TTL_SECONDS // 60
+    message = (
+        f"🔐 <b>Code de connexion Reflanex20</b>\n\n"
+        f"Utilisateur : <code>{username}</code>\n"
+        f"IP : <code>{ip}</code>\n"
+        f"Code : <b>{code}</b>\n"
+        f"Valide {ttl_min} minutes.\n\n"
+        f"Si ce n'est pas vous, ignorez ce message."
+    )
+
+    errors = []
+    for admin_id in admin_ids:
+        try:
+            await _bot_instance.send_message(
+                chat_id=admin_id,
+                text=message,
+                parse_mode="HTML",
+            )
+        except Exception as exc:
+            logger.error("Failed to send OTP to admin %s: %s", admin_id, exc)
+            errors.append(exc)
+
+    if errors:
+        raise RuntimeError(f"Telegram delivery failed for {len(errors)} admin(s)")
+
+
+async def send_login_success(username: str, ip: str) -> None:
+    """Notify all admins of a successful login (best-effort, does not raise)."""
+    if _bot_instance is None:
+        return
+
+    admin_ids = settings.get_admin_ids()
+    if not admin_ids:
+        return
+
+    now_str = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    message = (
+        f"✅ <b>Connexion réussie</b>\n\n"
+        f"Utilisateur : <code>{username}</code>\n"
+        f"IP : <code>{ip}</code>\n"
+        f"Heure : {now_str}"
+    )
+
+    for admin_id in admin_ids:
+        try:
+            await _bot_instance.send_message(
+                chat_id=admin_id,
+                text=message,
+                parse_mode="HTML",
+            )
+        except Exception as exc:
+            logger.warning("Could not send login-success notification to %s: %s", admin_id, exc)

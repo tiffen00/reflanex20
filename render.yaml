@@ -20,6 +20,22 @@ services:
         value: /opt/render/project/src/storage/campaigns
       - key: PUBLIC_BASE_URL
         sync: false
+      - key: WEB_USERNAME
+        sync: false
+      - key: WEB_PASSWORD
+        sync: false
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: SESSION_TTL_HOURS
+        value: "24"
+      - key: OTP_TTL_SECONDS
+        value: "300"
+      - key: OTP_MAX_ATTEMPTS
+        value: "3"
+      - key: OTP_LENGTH
+        value: "5"
+      - key: LOGIN_RATE_LIMIT_PER_15MIN
+        value: "5"
     disk:
       name: data
       mountPath: /opt/render/project/src/storage
