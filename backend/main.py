@@ -45,7 +45,7 @@ async def lifespan(app: FastAPI):
     if not settings.API_TOKEN:
         # Intentionally printed (not logged) to stdout once so the operator
         # can retrieve the token from service logs and set API_TOKEN as an env var.
-        masked = token[:8] + "..." + token[-4:]
+        masked = token[:4] + "..." + token[-4:]
         logger.warning(
             "🔑 API_TOKEN not set — auto-generated. "
             "Set API_TOKEN env var. Token prefix: %s",

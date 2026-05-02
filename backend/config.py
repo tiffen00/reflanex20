@@ -34,7 +34,6 @@ class Settings(BaseSettings):
     def get_api_token(self) -> str:
         if not self.API_TOKEN:
             token = secrets.token_urlsafe(32)
-            logger.warning("API_TOKEN not set — generated ephemeral token: %s", token)
             return token
         return self.API_TOKEN
 

@@ -150,7 +150,7 @@ def get_file_path(storage_path: str, relative_path: str) -> Optional[Path]:
     # Resolve the joined path to catch any traversal attempts
     target = Path(os.path.realpath(base / relative_path))
     # Verify the resolved target is strictly inside the base directory
-    if not str(target).startswith(str(base) + os.sep) and target != base:
+    if not str(target).startswith(str(base) + os.sep):
         return None
     if target.is_file():
         return target
