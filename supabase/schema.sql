@@ -22,6 +22,7 @@ create table public.links (
   is_active    boolean not null default true,
   click_limit  int,
   expires_at   timestamptz,
+  protection_level text not null default 'standard',
   created_at   timestamptz not null default now()
 );
 create index on public.links (campaign_id);
@@ -57,6 +58,21 @@ create table public.click_alerts (
   created_at      timestamptz not null default now()
 );
 create index on public.click_alerts (link_id);
+
+create table public.bot_hits (
+  id           bigserial primary key,
+  link_id      bigint references public.links(id) on delete cascade,
+  slug         text,
+  ip           text,
+  user_agent   text,
+  country      text,
+  reason       text not null,
+  score        int,
+  hit_at       timestamptz not null default now()
+);
+create index on public.bot_hits (link_id);
+create index on public.bot_hits (hit_at desc);
+create index on public.bot_hits (reason);
 
 create or replace view public.link_stats as
 select

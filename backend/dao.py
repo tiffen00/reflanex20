@@ -366,3 +366,129 @@ def update_campaign_storage(campaign_id: int, storage_path: str, entry_file: str
     except Exception as e:
         logger.error("update_campaign_storage error: %s", e)
         raise
+
+
+def update_link_protection_level(slug: str, level: str) -> None:
+    """Update the protection_level of a link identified by slug."""
+    try:
+        sb = get_supabase()
+        sb.table("links").update({"protection_level": level}).eq("slug", slug).execute()
+    except Exception as e:
+        logger.error("update_link_protection_level error: %s", e)
+        raise
+
+
+# ──────────────────────────────────────────────
+# Bot hits
+# ──────────────────────────────────────────────
+
+# In-memory fallback when the bot_hits table doesn't exist yet
+_bot_hits_memory: list[dict] = []
+_BOT_HITS_MEMORY_MAX = 1000
+
+
+def log_bot_hit(
+    slug: str,
+    ip: str,
+    user_agent: str,
+    country: str | None,
+    reason: str,
+    score: int,
+    link_id: int | None = None,
+) -> None:
+    """Record a bot hit. Falls back to in-memory if the Supabase table doesn't exist."""
+    try:
+        sb = get_supabase()
+        payload: dict = {
+            "slug": slug,
+            "ip": ip,
+            "user_agent": user_agent[:500] if user_agent else "",
+            "country": country,
+            "reason": reason,
+            "score": score,
+        }
+        if link_id is not None:
+            payload["link_id"] = link_id
+        sb.table("bot_hits").insert(payload).execute()
+        return
+    except Exception as e:
+        err_str = str(e).lower()
+        if "does not exist" in err_str or "undefined table" in err_str or "42p01" in err_str:
+            logger.warning("bot_hits table not found — using in-memory fallback (run migration 002_antibot.sql)")
+        else:
+            logger.error("log_bot_hit error: %s", e)
+
+    # In-memory fallback
+    entry = {
+        "slug": slug,
+        "ip": ip,
+        "user_agent": user_agent[:500] if user_agent else "",
+        "country": country,
+        "reason": reason,
+        "score": score,
+        "link_id": link_id,
+        "hit_at": datetime.now(timezone.utc).isoformat(),
+    }
+    _bot_hits_memory.append(entry)
+    if len(_bot_hits_memory) > _BOT_HITS_MEMORY_MAX:
+        del _bot_hits_memory[: len(_bot_hits_memory) - _BOT_HITS_MEMORY_MAX]
+
+
+def get_bot_hits_stats(hours: int = 24) -> dict:
+    """Return aggregated bot hit stats for the last N hours."""
+    try:
+        sb = get_supabase()
+        since = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+        result = sb.table("bot_hits").select("reason").gte("hit_at", since).execute()
+        rows = result.data or []
+        total = len(rows)
+        by_reason: dict[str, int] = {}
+        for row in rows:
+            r = row.get("reason", "unknown")
+            # Normalise: keep only the prefix before ':'
+            key = r.split(":")[0] if ":" in r else r
+            by_reason[key] = by_reason.get(key, 0) + 1
+        return {"total": total, "by_reason": by_reason}
+    except Exception as e:
+        err_str = str(e).lower()
+        if "does not exist" in err_str or "42p01" in err_str:
+            # Fall back to in-memory
+            pass
+        else:
+            logger.error("get_bot_hits_stats error: %s", e)
+
+    # In-memory fallback
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+    rows = [
+        r for r in _bot_hits_memory
+        if datetime.fromisoformat(r["hit_at"]) >= cutoff
+    ]
+    total = len(rows)
+    by_reason: dict[str, int] = {}
+    for row in rows:
+        r = row.get("reason", "unknown")
+        key = r.split(":")[0] if ":" in r else r
+        by_reason[key] = by_reason.get(key, 0) + 1
+    return {"total": total, "by_reason": by_reason}
+
+
+def get_bot_hits_recent(limit: int = 50) -> list[dict]:
+    """Return the most recent bot hits."""
+    try:
+        sb = get_supabase()
+        result = (
+            sb.table("bot_hits")
+            .select("slug,ip,user_agent,country,reason,score,hit_at")
+            .order("hit_at", desc=True)
+            .limit(limit)
+            .execute()
+        )
+        return result.data or []
+    except Exception as e:
+        err_str = str(e).lower()
+        if "does not exist" in err_str or "42p01" in err_str:
+            pass
+        else:
+            logger.error("get_bot_hits_recent error: %s", e)
+
+    return list(reversed(_bot_hits_memory[-limit:]))
