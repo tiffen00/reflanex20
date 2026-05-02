@@ -28,6 +28,7 @@ storage/campaigns/
 
 # Secrets
 .env
+storage/.session_secret
 
 # OS
 .DS_Store
