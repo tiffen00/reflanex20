@@ -7,6 +7,7 @@ create table public.campaigns (
   storage_path text not null,
   entry_file   text not null default '',
   original_filename text,
+  is_protected boolean not null default false,
   created_at   timestamptz not null default now(),
   unique (name, version)
 );

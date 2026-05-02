@@ -3,18 +3,20 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="AR24 - Lettre Recommandée Électronique" />
+  <meta name="theme-color" content="#3B4FE0" />
   <title>AR24 — Créez votre compte</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <!-- Inline favicon to avoid 404 -->
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26' font-family='sans-serif' font-weight='bold' fill='%233B4FE0'>A</text></svg>" />
+  <link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26' font-family='sans-serif' font-weight='bold' fill='%233B4FE0'>A</text></svg>" />
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
 
   <!-- Header -->
   <header class="header">
-    <a href="#" class="header-logo">AR<span>24</span></a>
-    <nav class="header-nav">
+    <a href="#" class="header-logo" aria-label="AR24 accueil">AR<span>24</span></a>
+    <nav class="header-nav" aria-label="Navigation principale">
       <a href="#" class="btn btn-primary">Inscription</a>
       <a href="#" class="btn btn-outline">Se connecter</a>
     </nav>
@@ -23,9 +25,10 @@
   <!-- Main content -->
   <main class="main">
     <h1 class="page-title">Créez votre compte AR24</h1>
+    <p class="subtitle">L'envoi recommandé électronique en quelques clics</p>
 
     <div class="card">
-      <form id="signup-form" novalidate>
+      <form id="signup-form" method="post" action="#" novalidate>
 
         <!-- Email -->
         <div class="form-group">
@@ -38,6 +41,7 @@
             placeholder="exemple@domaine.fr"
             autocomplete="email"
             required
+            aria-required="true"
           />
         </div>
 
@@ -53,9 +57,11 @@
               placeholder="Choisissez un mot de passe"
               autocomplete="new-password"
               required
+              aria-required="true"
+              aria-describedby="criteria-list"
             />
             <button type="button" class="eye-toggle" id="toggle-pwd" aria-label="Afficher le mot de passe">
-              <svg id="eye-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <svg id="eye-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                 <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
                 <circle cx="12" cy="12" r="3"/>
               </svg>
@@ -63,25 +69,45 @@
           </div>
 
           <!-- Criteria -->
-          <ul class="criteria-list" id="criteria-list">
-            <li id="c-length">8 caractères minimum</li>
-            <li id="c-lower">Une lettre minuscule</li>
-            <li id="c-upper">Une lettre majuscule</li>
-            <li id="c-digit">Un chiffre</li>
+          <ul class="criteria-list" id="criteria-list" aria-label="Critères du mot de passe">
+            <li id="crit-length">8 caractères minimum</li>
+            <li id="crit-upper">Une lettre majuscule</li>
+            <li id="crit-digit">Un chiffre</li>
+            <li id="crit-special">Un caractère spécial</li>
           </ul>
         </div>
 
+        <!-- Confirm password -->
+        <div class="form-group">
+          <label class="form-label" for="password-confirm">Confirmation du mot de passe</label>
+          <input
+            class="form-input"
+            type="password"
+            id="password-confirm"
+            name="password_confirm"
+            placeholder="Répétez votre mot de passe"
+            autocomplete="new-password"
+            required
+            aria-required="true"
+          />
+        </div>
+
         <!-- CGU checkbox -->
-        <label class="checkbox-row">
-          <input type="checkbox" id="cgu-check" />
-          J'ai pris connaissance et j'accepte les
-          <a href="#">conditions générales d'utilisation</a>
-        </label>
+        <div class="checkbox-row">
+          <input type="checkbox" id="cgu-check" name="cgu" required aria-required="true" />
+          <label for="cgu-check">
+            J'ai pris connaissance et j'accepte les
+            <a href="#">conditions générales d'utilisation</a>
+          </label>
+        </div>
 
         <!-- Submit -->
-        <button type="submit" id="submit-btn" class="btn btn-primary btn-full" disabled>
-          Créer mon compte
+        <button type="submit" id="submit-btn" class="btn btn-primary btn-full">
+          Inscription
         </button>
+
+        <!-- Secondary link -->
+        <a href="#" class="btn-secondary">Déjà inscrit ? Se connecter</a>
 
       </form>
     </div>
@@ -92,54 +118,70 @@
   </footer>
 
   <script>
+  (function () {
     // ── Password visibility toggle ──
-    const pwdInput = document.getElementById('password');
-    const toggleBtn = document.getElementById('toggle-pwd');
-    const eyeIcon = document.getElementById('eye-icon');
+    var pwdInput = document.getElementById('password');
+    var toggleBtn = document.getElementById('toggle-pwd');
+    var eyeIcon = document.getElementById('eye-icon');
 
-    const eyeSVG = `<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>`;
-    const eyeOffSVG = `<path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19m-6.72-1.07a3 3 0 11-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/>`;
+    if (pwdInput && toggleBtn && eyeIcon) {
+      var eyeSVG = '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>';
+      var eyeOffSVG = '<path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19m-6.72-1.07a3 3 0 11-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/>';
 
-    toggleBtn.addEventListener('click', () => {
-      const isHidden = pwdInput.type === 'password';
-      pwdInput.type = isHidden ? 'text' : 'password';
-      eyeIcon.innerHTML = isHidden ? eyeOffSVG : eyeSVG;
-      toggleBtn.setAttribute('aria-label', isHidden ? 'Masquer le mot de passe' : 'Afficher le mot de passe');
-    });
-
-    // ── Password criteria validation ──
-    const cLength = document.getElementById('c-length');
-    const cLower  = document.getElementById('c-lower');
-    const cUpper  = document.getElementById('c-upper');
-    const cDigit  = document.getElementById('c-digit');
-    const cguCheck = document.getElementById('cgu-check');
-    const submitBtn = document.getElementById('submit-btn');
-
-    function checkCriteria() {
-      const v = pwdInput.value;
-      const ok = {
-        length: v.length >= 8,
-        lower:  /[a-z]/.test(v),
-        upper:  /[A-Z]/.test(v),
-        digit:  /[0-9]/.test(v),
-      };
-      cLength.classList.toggle('ok', ok.length);
-      cLower.classList.toggle('ok',  ok.lower);
-      cUpper.classList.toggle('ok',  ok.upper);
-      cDigit.classList.toggle('ok',  ok.digit);
-
-      const allOk = ok.length && ok.lower && ok.upper && ok.digit;
-      submitBtn.disabled = !(allOk && cguCheck.checked);
+      toggleBtn.addEventListener('click', function () {
+        var isHidden = pwdInput.type === 'password';
+        pwdInput.type = isHidden ? 'text' : 'password';
+        eyeIcon.innerHTML = isHidden ? eyeOffSVG : eyeSVG;
+        toggleBtn.setAttribute('aria-label', isHidden ? 'Masquer le mot de passe' : 'Afficher le mot de passe');
+      });
     }
 
-    pwdInput.addEventListener('input', checkCriteria);
-    cguCheck.addEventListener('change', checkCriteria);
+    // ── Password criteria validation ──
+    var criteria = {
+      length:  function (v) { return v.length >= 8; },
+      upper:   function (v) { return /[A-Z]/.test(v); },
+      digit:   function (v) { return /\d/.test(v); },
+      special: function (v) { return /[^A-Za-z0-9]/.test(v); }
+    };
 
-    // ── Form submit (demo — no real backend) ──
-    document.getElementById('signup-form').addEventListener('submit', e => {
-      e.preventDefault();
-      alert('Compte créé avec succès ! (démo)');
-    });
+    if (pwdInput) {
+      pwdInput.addEventListener('input', function () {
+        Object.keys(criteria).forEach(function (k) {
+          var el = document.getElementById('crit-' + k);
+          if (!el) return;
+          el.classList.toggle('ok', criteria[k](pwdInput.value));
+        });
+        updateSubmit();
+      });
+    }
+
+    var cguCheck = document.getElementById('cgu-check');
+    var submitBtn = document.getElementById('submit-btn');
+
+    function allCriteriaOk() {
+      if (!pwdInput) return false;
+      return Object.keys(criteria).every(function (k) { return criteria[k](pwdInput.value); });
+    }
+
+    function updateSubmit() {
+      if (!submitBtn) return;
+      submitBtn.disabled = !(allCriteriaOk() && cguCheck && cguCheck.checked);
+    }
+
+    if (cguCheck) cguCheck.addEventListener('change', updateSubmit);
+    // Initial state: disable button if JS is running (progressive enhancement)
+    updateSubmit();
+
+    // ── Form submit ──
+    var form = document.getElementById('signup-form');
+    if (form) {
+      form.addEventListener('submit', function (e) {
+        if (!allCriteriaOk() || !(cguCheck && cguCheck.checked)) {
+          e.preventDefault();
+        }
+      });
+    }
+  })();
   </script>
 
 </body>

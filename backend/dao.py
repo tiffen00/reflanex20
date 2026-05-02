@@ -55,6 +55,7 @@ def create_campaign(
     entry_file: str,
     original_filename: str,
     version: int = 1,
+    is_protected: bool = False,
 ) -> dict:
     try:
         sb = get_supabase()
@@ -65,6 +66,7 @@ def create_campaign(
             "original_filename": original_filename,
             "version": version,
             "is_current": True,
+            "is_protected": is_protected,
         }).execute()
         return result.data[0]
     except Exception as e:
@@ -340,4 +342,27 @@ def update_link_domain(slug: str, domain: str) -> None:
         sb.table("links").update({"domain": domain}).eq("slug", slug).execute()
     except Exception as e:
         logger.error("update_link_domain error: %s", e)
+        raise
+
+
+def set_campaign_protected(campaign_id: int, is_protected: bool) -> None:
+    """Set or clear the is_protected flag on a campaign."""
+    try:
+        sb = get_supabase()
+        sb.table("campaigns").update({"is_protected": is_protected}).eq("id", campaign_id).execute()
+    except Exception as e:
+        logger.error("set_campaign_protected error: %s", e)
+        raise
+
+
+def update_campaign_storage(campaign_id: int, storage_path: str, entry_file: str) -> None:
+    """Update the storage_path and entry_file of an existing campaign."""
+    try:
+        sb = get_supabase()
+        sb.table("campaigns").update({
+            "storage_path": storage_path,
+            "entry_file": entry_file,
+        }).eq("id", campaign_id).execute()
+    except Exception as e:
+        logger.error("update_campaign_storage error: %s", e)
         raise
