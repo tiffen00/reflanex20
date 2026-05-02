@@ -176,3 +176,26 @@ Pour chaque domaine que tu veux utiliser :
 ## 9. Avertissement
 
 Ce projet est conçu pour des campagnes marketing **légitimes** : landing pages, A/B testing, rotations promotionnelles, redirections de liens. L'utilisateur est seul responsable du contenu hébergé et de la conformité avec les législations en vigueur (RGPD, anti-spam, etc.).
+
+---
+
+## 📦 Templates de campagne
+
+Le dossier `examples/` contient des templates prêts à l'emploi à zipper et uploader.
+
+### `examples/ar24-template/`
+
+Page d'inscription style AR24 (fond clair, header blanc, card blanche, boutons pill bleu/violet).
+
+```bash
+cd examples && zip -r ar24-template.zip ar24-template/
+# Puis uploader ar24-template.zip via l'interface web ou le bot Telegram
+```
+
+Voir `examples/ar24-template/README.md` pour les détails de personnalisation.
+
+---
+
+## ⚠️ Note sur les fichiers PHP
+
+Les fichiers `.php` uploadés sont **servis tels quels** (contenu brut/téléchargement). Reflanex20 est un serveur de fichiers statiques (FastAPI) et **n'exécute pas** le PHP. Pour exécuter du PHP, héberger derrière un serveur PHP-FPM séparé.

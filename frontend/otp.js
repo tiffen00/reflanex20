@@ -153,7 +153,8 @@ async function submitOTP(code) {
     digits[0].focus();
     validateBtn.disabled = true;
   } catch (err) {
-    otpError.textContent = 'Erreur réseau. Réessayez.';
+    console.error('[otp] fetch failed:', err);
+    otpError.textContent = `Erreur réseau : ${err.message || 'requête échouée'}. Vérifiez votre connexion ou les logs serveur.`;
     otpError.classList.remove('hidden');
     // Re-enable the button so the user can retry
     validateBtn.disabled = false;

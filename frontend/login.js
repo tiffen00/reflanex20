@@ -31,7 +31,13 @@ form.addEventListener('submit', async e => {
       return;
     }
 
-    const data = await res.json();
+    let data;
+    try {
+      data = await res.json();
+    } catch {
+      const text = await res.text().catch(() => '');
+      data = { detail: text || `HTTP ${res.status}` };
+    }
 
     if (!res.ok) {
       loginError.textContent = data.detail || 'Identifiant ou mot de passe incorrect.';
@@ -43,7 +49,8 @@ form.addEventListener('submit', async e => {
     sessionStorage.setItem('otpExpiresIn', data.expires_in || 300);
     window.location.href = `/login/otp?challenge=${encodeURIComponent(data.challenge_id)}`;
   } catch (err) {
-    loginError.textContent = 'Erreur réseau. Réessayez.';
+    console.error('[login] fetch failed:', err);
+    loginError.textContent = `Erreur réseau : ${err.message || 'requête échouée'}. Vérifiez votre connexion ou les logs serveur.`;
     loginError.classList.remove('hidden');
   } finally {
     loginBtn.disabled = false;

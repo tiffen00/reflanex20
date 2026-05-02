@@ -442,7 +442,7 @@ def build_application() -> Application:
 async def send_otp_to_admins(code: str, username: str, ip: str) -> None:
     """Send the OTP code to all configured Telegram admin IDs."""
     if _bot_instance is None:
-        raise RuntimeError("Telegram bot not initialised")
+        raise RuntimeError("Telegram bot is not initialized — check TELEGRAM_BOT_TOKEN")
 
     admin_ids = settings.get_admin_ids()
     if not admin_ids:
