@@ -43,6 +43,14 @@ class Settings(BaseSettings):
     # OTP fallback: if True, log OTP codes to server stdout instead of Telegram
     OTP_FALLBACK_LOG: bool = False
 
+    # Anti-bot protection
+    ANTIBOT_ENABLED: bool = True
+    ANTIBOT_SECRET: str = ""
+    ANTIBOT_DEFAULT_LEVEL: str = "standard"  # off | light | standard | maximum
+    ANTIBOT_REDIRECT_URL: str = "https://www.google.com/"
+    ANTIBOT_RATE_LIMIT_WINDOW_SEC: int = 10
+    ANTIBOT_RATE_LIMIT_MAX: int = 5
+
     def get_domains(self) -> List[str]:
         if not self.DOMAINS:
             return []
@@ -88,6 +96,7 @@ class Settings(BaseSettings):
 
 settings = Settings()
 _resolved_token: Optional[str] = None
+_resolved_antibot_secret: Optional[str] = None
 
 
 def get_resolved_token() -> str:
@@ -95,3 +104,14 @@ def get_resolved_token() -> str:
     if _resolved_token is None:
         _resolved_token = settings.get_api_token()
     return _resolved_token
+
+
+def get_antibot_secret() -> str:
+    """Return the antibot HMAC secret, auto-generating one if not configured."""
+    global _resolved_antibot_secret
+    if _resolved_antibot_secret is None:
+        if settings.ANTIBOT_SECRET:
+            _resolved_antibot_secret = settings.ANTIBOT_SECRET
+        else:
+            _resolved_antibot_secret = secrets.token_hex(32)
+    return _resolved_antibot_secret

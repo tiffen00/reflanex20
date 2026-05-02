@@ -1,0 +1,97 @@
+# Bot / scanner / crawler User-Agent blocklist
+# One pattern per line. Lines starting with # are comments.
+# Patterns are compiled into a single case-insensitive regex.
+
+# SEO crawlers
+googlebot
+bingbot
+yandexbot
+baiduspider
+slurp
+duckduckbot
+applebot
+petalbot
+ahrefsbot
+semrushbot
+mj12bot
+
+# Security scanners / blacklist services
+phishtank
+urlquery
+virustotal
+wepawet
+safebrowsing
+googlesecurityscanner
+microsoft.*url
+defender
+safeb-tag
+phishingscanner
+
+# HTTP tools / scrapers
+wget
+curl/
+python-requests
+python-urllib
+aiohttp
+axios
+go-http-client
+httpclient
+okhttp
+scrapy
+httperf
+apache-httpclient
+node-fetch
+libwww-perl
+
+# Headless browsers
+headlesschrome
+phantomjs
+selenium
+puppeteer
+playwright
+chromedriver
+webdriverio
+htmlunit
+nightmare
+
+# Social / preview bots
+facebookexternalhit
+twitterbot
+linkedinbot
+whatsapp
+telegrambot
+discordbot
+slackbot
+skypeuripreview
+viberbot
+vkshare
+redditbot
+pinterest
+
+# Antivirus / enterprise security
+bitdefender
+kaspersky
+mcafee
+eset
+avast
+norton
+trendmicro
+sophos
+forcepoint
+barracuda
+proofpoint
+mimecast
+cisco-talos
+cylance
+sentinelone
+crowdstrike
+paloalto
+fortinet
+checkpoint
+zscaler
+ironport
+
+# Generic catch-all (last resort)
+\bspider\b
+\bcrawler\b
+\bscraper\b

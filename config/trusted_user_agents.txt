@@ -1,0 +1,8 @@
+# Trusted / whitelisted User-Agent patterns (overrides blocklist)
+# One pattern per line. Lines starting with # are comments.
+# These patterns are matched case-insensitively against the User-Agent string.
+# A request matching any pattern here will bypass all anti-bot checks.
+
+# Add your trusted bots / monitoring agents below:
+# UptimeRobot
+# GTmetrix

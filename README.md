@@ -226,7 +226,109 @@ Pour chaque domaine que tu veux utiliser :
 
 ---
 
-## 9. Avertissement
+## 🛡️ Protection anti-bot
+
+Reflanex20 intègre une défense en profondeur pour bloquer scanners de sécurité, antivirus, crawlers et headless browsers qui font passer les campagnes au rouge.
+
+### Principe
+
+Quand un bot est détecté, il reçoit une **redirection HTTP 302 vers Google** sans voir aucune trace de la campagne.
+
+### Couche 1 — Filtrage serveur (sans JS)
+
+Avant de servir tout contenu d'un lien `/c/<slug>/`, le middleware vérifie :
+
+| Vérification | Description |
+|---|---|
+| **User-Agent blocklist** | ~60 patterns : crawlers SEO, outils HTTP (curl, wget), headless browsers, antivirus, réseaux sociaux preview, etc. |
+| **Score de headers** | Absence d'Accept-Language, Accept=*/*, absence d'Accept-Encoding, headers suspects → score ≥ 3 = bot |
+| **Rate limiting par IP** | > N requêtes en M secondes sur `/c/` → bot (assets ignorés) |
+| **Méthode HTTP** | HEAD sur une route de campagne → bot |
+
+### Couche 2 — Challenge JS invisible (niveau "maximum")
+
+Si le niveau de protection est `maximum`, avant de servir le contenu, l'utilisateur reçoit une page challenge (~2.5 KB) qui :
+
+1. Vérifie l'absence de `navigator.webdriver`
+2. Vérifie les dimensions de l'écran
+3. Vérifie les langues du navigateur
+4. Teste `localStorage`
+5. Mesure le temps CPU (calcul `Math.sqrt(i)`)
+6. Détecte les globals headless (`window.callPhantom`, etc.)
+7. Attend un mouvement souris/scroll/touch en 1.5s
+8. Vérifie un honeypot (champ caché)
+
+Si tous les tests passent → POST `/c/<slug>/_verify` → cookie HMAC valide 1h → redirect vers le contenu.
+
+### Niveaux de protection par lien
+
+| Niveau | Description |
+|---|---|
+| `off` | Aucun filtrage |
+| `light` | UA + headers uniquement |
+| `standard` | Couche 1 complète (défaut) |
+| `maximum` | Couche 1 + Challenge JS |
+
+Le niveau se configure via le bot Telegram : détail d'un lien → **🛡️ Protection**.
+
+### Variables d'environnement
+
+```
+ANTIBOT_ENABLED=true                    # Activer/désactiver (false = debug)
+ANTIBOT_SECRET=<openssl rand -hex 32>  # Clé HMAC pour cookies/tokens
+ANTIBOT_DEFAULT_LEVEL=standard          # Niveau par défaut pour tous les liens
+ANTIBOT_REDIRECT_URL=https://www.google.com/
+ANTIBOT_RATE_LIMIT_WINDOW_SEC=10
+ANTIBOT_RATE_LIMIT_MAX=5
+```
+
+> `ANTIBOT_SECRET` est **auto-généré** par Render (`generateValue: true` dans `render.yaml`). Pour un déploiement stable à travers les redémarrages, génère-le manuellement : `openssl rand -hex 32`.
+
+### Migration Supabase
+
+Si tu utilises déjà la v2.0 (Supabase), exécute la migration pour créer la table `bot_hits` et la colonne `protection_level` :
+
+```sql
+-- Dans l'éditeur SQL Supabase :
+-- Coller le contenu de supabase/migrations/002_antibot.sql
+```
+
+> Sans migration, l'anti-bot reste fonctionnel mais les hits bots sont stockés **en mémoire** (perdus au redémarrage). Un avertissement est loggé au démarrage.
+
+### Tests manuels
+
+```bash
+# 1. UA bloqué → doit recevoir 302 vers Google
+curl -Ls -I -A "python-requests/2.31" https://ton-service.onrender.com/c/monslug/
+# → Location: https://www.google.com/
+
+# 2. curl sans Accept-Language → doit être bloqué (headers suspects)
+curl -Ls -I https://ton-service.onrender.com/c/monslug/
+# → Location: https://www.google.com/
+
+# 3. Navigateur normal → doit voir le contenu (ou la page challenge si niveau maximum)
+# Ouvre dans Chrome: https://ton-service.onrender.com/c/monslug/
+
+# 4. Rate limit (6 requêtes en < 10s)
+for i in {1..6}; do
+  curl -Ls -I -A "Mozilla/5.0 Firefox/120" https://ton-service.onrender.com/c/monslug/
+done
+# La 6e doit recevoir 302 vers Google
+
+# 5. HEAD (méthode suspecte)
+curl -Ls -I -X HEAD -A "Mozilla/5.0 Firefox/120" https://ton-service.onrender.com/c/monslug/
+# → Location: https://www.google.com/
+```
+
+### Bot Telegram — menu 🛡️ Protection
+
+Depuis le menu principal, bouton **🛡️ Protection anti-bot** :
+- Stats des bots bloqués sur 24h par catégorie
+- Liste des 50 derniers bots
+- Configuration du niveau par lien (depuis le détail d'un lien → **🛡️ Protection**)
+
+---
+
 
 Ce projet est conçu pour des campagnes marketing **légitimes** : landing pages, A/B testing, rotations promotionnelles, redirections de liens. L'utilisateur est seul responsable du contenu hébergé et de la conformité avec les législations en vigueur (RGPD, anti-spam, etc.).
 
