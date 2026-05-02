@@ -40,13 +40,13 @@ if (apiToken) {
 
 /* ─── Login / logout ─── */
 loginBtn.addEventListener('click', async () => {
-  const t = tokenInput.value.trim();
-  if (!t) return;
+  const token = tokenInput.value.trim();
+  if (!token) return;
   // Validate by hitting /api/domains
-  const res = await apiFetch('/api/domains', 'GET', null, t);
+  const res = await apiFetch('/api/domains', 'GET', null, token);
   if (res.ok) {
-    apiToken = t;
-    localStorage.setItem('apiToken', t);
+    apiToken = token;
+    localStorage.setItem('apiToken', token);
     showApp();
   } else {
     loginError.classList.remove('hidden');

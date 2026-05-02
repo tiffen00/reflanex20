@@ -43,7 +43,16 @@ async def lifespan(app: FastAPI):
     # Log / auto-generate API token
     token = get_resolved_token()
     if not settings.API_TOKEN:
-        logger.warning("🔑 API_TOKEN (auto-generated, set it as env var): %s", token)
+        # Intentionally printed (not logged) to stdout once so the operator
+        # can retrieve the token from service logs and set API_TOKEN as an env var.
+        masked = token[:8] + "..." + token[-4:]
+        logger.warning(
+            "🔑 API_TOKEN not set — auto-generated. "
+            "Set API_TOKEN env var. Token prefix: %s",
+            masked,
+        )
+        # Print full token once to stdout so it's visible in deployment logs
+        print(f"[reflanex20] STARTUP API_TOKEN={token}", flush=True)
     else:
         logger.info("🔑 API_TOKEN is set from environment.")
 

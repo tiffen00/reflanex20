@@ -22,12 +22,14 @@ def _storage_root() -> Path:
 
 
 def _is_safe_path(base: Path, target: Path) -> bool:
-    """Return True if target is safely inside base (no path traversal)."""
-    try:
-        target.resolve().relative_to(base.resolve())
-        return True
-    except ValueError:
-        return False
+    """Return True if target is safely inside base (no path traversal).
+
+    Uses os.path.realpath for symlink-aware resolution and a strict
+    string-prefix check to prevent zip-slip / directory traversal.
+    """
+    real_base = os.path.realpath(base) + os.sep
+    real_target = os.path.realpath(target)
+    return real_target.startswith(real_base)
 
 
 def validate_and_unzip(
@@ -85,7 +87,9 @@ def validate_and_unzip(
     # Prefer index.html, fallback to first .html
     entry_candidates = [f for f in root_html_files if Path(f).name.lower() == "index.html"]
     entry_name = (entry_candidates or root_html_files)[0]
-    entry_file = Path(entry_name).name  # just the filename
+    # entry_file is the bare filename only; the strip_prefix logic below ensures
+    # the file lands at dest/<entry_file> after extraction (top-level dir is stripped).
+    entry_file = Path(entry_name).name
 
     dest = _storage_root() / campaign_slug
     if dest.exists():
@@ -106,6 +110,9 @@ def validate_and_unzip(
     ):
         strip_prefix = list(top_dirs)[0] + "/"
 
+    # Pre-compute the resolved destination so path checks are fast and consistent
+    resolved_dest = os.path.realpath(dest) + os.sep
+
     for member in zf.infolist():
         name = member.filename
         if name.endswith("/"):
@@ -119,9 +126,10 @@ def validate_and_unzip(
         if not rel:
             continue
 
-        target = dest / rel
-        if not _is_safe_path(dest, target):
-            continue  # skip unsafe paths silently after initial check
+        # Resolve the target path relative to dest and verify it stays inside
+        target = (dest / rel).resolve()
+        if not os.path.realpath(target).startswith(resolved_dest):
+            continue  # skip unsafe paths (zip-slip protection)
 
         target.parent.mkdir(parents=True, exist_ok=True)
         with zf.open(member) as src, open(target, "wb") as dst:
@@ -138,9 +146,11 @@ def delete_campaign_files(storage_path: str) -> None:
 
 def get_file_path(storage_path: str, relative_path: str) -> Optional[Path]:
     """Return resolved file path if safe, else None."""
-    base = Path(storage_path)
-    target = base / relative_path
-    if not _is_safe_path(base, target):
+    base = Path(os.path.realpath(storage_path))
+    # Resolve the joined path to catch any traversal attempts
+    target = Path(os.path.realpath(base / relative_path))
+    # Verify the resolved target is strictly inside the base directory
+    if not str(target).startswith(str(base) + os.sep) and target != base:
         return None
     if target.is_file():
         return target

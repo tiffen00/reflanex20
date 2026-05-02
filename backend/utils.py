@@ -14,8 +14,10 @@ def generate_slug() -> str:
 
 def slugify(name: str) -> str:
     """Convert a campaign name to a safe directory name."""
-    name = name.lower().strip()
+    # Limit length before regex to avoid potential DoS on crafted inputs
+    name = name[:200].lower().strip()
     name = re.sub(r"[^\w\s-]", "", name)
-    name = re.sub(r"[\s_-]+", "-", name)
-    name = re.sub(r"^-+|-+$", "", name)
+    # Replace runs of whitespace / underscores / hyphens with a single hyphen
+    parts = name.split()
+    name = "-".join(p.strip("_-") for p in parts if p.strip("_-"))
     return name or "campaign"
