@@ -1,10 +1,13 @@
 import asyncio
 import logging
+import os
+import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import List, Optional
 
 from fastapi import (
+    APIRouter,
     Depends,
     FastAPI,
     Form,
@@ -12,15 +15,13 @@ from fastapi import (
     Request,
     UploadFile,
     File,
-    status,
 )
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from backend.auth import (
-    require_api_token,
     require_auth,
     require_session,
     verify_web_credentials,
@@ -30,6 +31,7 @@ from backend.auth import (
 )
 from backend.config import settings, get_resolved_token
 from backend.database import Campaign, Link, get_db, init_db
+from backend.mime import guess_inline_content_type
 from backend.rate_limit import login_rate_limiter
 from backend.storage import StorageError, delete_campaign_files, get_file_path, validate_and_unzip
 from backend.utils import generate_slug, slugify
@@ -37,6 +39,18 @@ from backend.utils import generate_slug, slugify
 logger = logging.getLogger(__name__)
 
 FRONTEND_DIR = Path(__file__).parent.parent / "frontend"
+
+
+def _serve_html_with_prefix(filename: str) -> HTMLResponse:
+    """Serve an HTML file with __ADMIN_PREFIX__ replaced by the configured value."""
+    page = FRONTEND_DIR / filename
+    if not page.exists():
+        raise HTTPException(status_code=404, detail=f"{filename} not found")
+    content = page.read_text(encoding="utf-8")
+    # Sanitize prefix: only allow URL-safe path chars (alphanumeric, /, -, _)
+    safe_prefix = re.sub(r"[^a-zA-Z0-9/_\-]", "", settings.ADMIN_PATH_PREFIX)
+    content = content.replace("__ADMIN_PREFIX__", safe_prefix)
+    return HTMLResponse(content)
 
 
 # ──────────────────────────────────────────────
@@ -54,40 +68,56 @@ async def lifespan(app: FastAPI):
     # Log / auto-generate API token
     token = get_resolved_token()
     if not settings.API_TOKEN:
-        # Intentionally printed (not logged) to stdout once so the operator
-        # can retrieve the token from service logs and set API_TOKEN as an env var.
-        masked = token[:4] + "..." + token[-4:]
+        masked = token[:4] + "..."
         logger.warning(
             "🔑 API_TOKEN not set — auto-generated. "
             "Set API_TOKEN env var. Token prefix: %s",
             masked,
         )
-        # Print full token once to stdout so it's visible in deployment logs
         print(f"[reflanex20] STARTUP API_TOKEN={token}", flush=True)
     else:
         logger.info("🔑 API_TOKEN is set from environment.")
 
-    # Warn if WEB_PASSWORD is not set
-    if not settings.WEB_PASSWORD:
-        logger.warning(
-            "⚠️  WEB_PASSWORD not set — web login will be disabled until set in env."
-        )
+    # Boot configuration validation — log clearly what is missing
+    missing: list[str] = []
+    if not settings.TELEGRAM_BOT_TOKEN:
+        logger.warning("❌ TELEGRAM_BOT_TOKEN is missing — login won't work")
+        missing.append("TELEGRAM_BOT_TOKEN")
+    else:
+        logger.info("✅ TELEGRAM_BOT_TOKEN: set")
 
-    # Log Telegram bot token and admin IDs presence (never log actual values)
-    if settings.TELEGRAM_BOT_TOKEN:
-        logger.info("🤖 TELEGRAM_BOT_TOKEN: set")
-    else:
-        logger.warning("🤖 TELEGRAM_BOT_TOKEN: not set — bot will be disabled")
     admin_ids = settings.get_admin_ids()
-    if admin_ids:
-        logger.info("👥 TELEGRAM_ADMIN_IDS: set (%d admin(s))", len(admin_ids))
+    if not admin_ids:
+        logger.warning("❌ TELEGRAM_ADMIN_IDS is empty — no one can receive OTPs")
+        missing.append("TELEGRAM_ADMIN_IDS")
     else:
-        logger.warning("👥 TELEGRAM_ADMIN_IDS: not set — no admin will receive login notifications")
+        logger.info("✅ TELEGRAM_ADMIN_IDS: set (%d admin(s))", len(admin_ids))
+
+    if not settings.WEB_USERNAME:
+        logger.warning("❌ WEB_USERNAME is missing — login disabled")
+        missing.append("WEB_USERNAME")
+    else:
+        logger.info("✅ WEB_USERNAME: set")
+
+    if not settings.WEB_PASSWORD:
+        logger.warning("❌ WEB_PASSWORD is missing — login disabled")
+        missing.append("WEB_PASSWORD")
+    else:
+        logger.info("✅ WEB_PASSWORD: set")
+
+    if missing:
+        logger.warning("⚠️  Missing env vars: %s", ", ".join(missing))
+    else:
+        logger.info("✅ Configuration looks OK")
+
+    logger.info("🔒 Admin portal prefix: %s", settings.ADMIN_PATH_PREFIX)
+    if settings.OTP_FALLBACK_LOG:
+        logger.warning("⚠️  OTP_FALLBACK_LOG=true — OTP codes will be logged to stdout (dev mode)")
 
     # Start Telegram bot if token is configured
     bot_task = None
     if settings.TELEGRAM_BOT_TOKEN:
-        from backend.telegram_bot import build_application, set_bot_username
+        from backend.telegram_bot import build_application, set_bot_username, setup_bot_ui
         tg_app = build_application()
         bot_task = asyncio.create_task(_run_bot(tg_app))
         logger.info("🤖 Telegram bot started.")
@@ -96,6 +126,11 @@ async def lifespan(app: FastAPI):
             await set_bot_username(tg_app.bot)
         except Exception as exc:
             logger.warning("Could not cache bot username: %s", exc)
+        # Configure bot commands and menu button (best-effort)
+        try:
+            await setup_bot_ui(tg_app.bot)
+        except Exception as exc:
+            logger.warning("Could not setup bot UI: %s", exc)
     else:
         logger.warning("TELEGRAM_BOT_TOKEN not set — bot disabled.")
 
@@ -138,9 +173,14 @@ if FRONTEND_DIR.exists():
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
-    logger.exception("Unhandled exception on %s: %s", request.url.path, exc)
+    logger.exception(
+        "Unhandled exception on %s %s: %s", request.method, request.url.path, exc
+    )
     return JSONResponse(
-        {"detail": "Erreur serveur interne"},
+        {
+            "detail": f"Erreur serveur : {type(exc).__name__}",
+            "path": request.url.path,
+        },
         status_code=500,
     )
 
@@ -225,7 +265,7 @@ def _unique_slug(db: Session) -> str:
 
 
 # ──────────────────────────────────────────────
-# Public routes
+# Public routes (always at root)
 # ──────────────────────────────────────────────
 
 @app.get("/healthz")
@@ -236,7 +276,6 @@ async def healthz():
 @app.get("/api/diag")
 async def diag(db: Session = Depends(get_db)):
     """Public diagnostic endpoint — returns config status without exposing secrets."""
-    # Telegram bot status
     telegram_status: str
     if not settings.TELEGRAM_BOT_TOKEN:
         telegram_status = "not_configured"
@@ -261,24 +300,10 @@ async def diag(db: Session = Depends(get_db)):
     }
 
 
-@app.get("/")
-async def serve_frontend(request: Request):
-    # Redirect to login if no valid session
-    session_token = request.cookies.get("session")
-    if not session_token or not verify_session_token(session_token):
-        return RedirectResponse(url="/login", status_code=302)
-    index = FRONTEND_DIR / "index.html"
-    if index.exists():
-        return FileResponse(str(index))
-    return JSONResponse({"status": "ok", "message": "Reflanex20 API"})
-
-
-@app.get("/login")
-async def serve_login():
-    page = FRONTEND_DIR / "login.html"
-    if page.exists():
-        return FileResponse(str(page))
-    return JSONResponse({"error": "login.html not found"}, status_code=404)
+@app.get("/", include_in_schema=False)
+async def serve_root():
+    """Root returns a generic 404 — no hint that an admin panel exists."""
+    return JSONResponse({"detail": "Page introuvable"}, status_code=404)
 
 
 @app.get("/c/{slug}", include_in_schema=False)
@@ -330,11 +355,30 @@ async def _serve_campaign_file(slug: str, path: str, request: Request, db: Sessi
     if file_path is None:
         raise HTTPException(status_code=404, detail="Fichier introuvable")
 
-    return FileResponse(str(file_path))
+    # Re-validate path is within storage as belt-and-suspenders check
+    storage_base = os.path.realpath(campaign.storage_path)
+    resolved_path = os.path.realpath(file_path)
+    if not resolved_path.startswith(storage_base + os.sep):
+        raise HTTPException(status_code=403, detail="Accès refusé")
+
+    # Detect MIME and always serve inline (never force download)
+    mime = guess_inline_content_type(file_path)
+    return FileResponse(
+        resolved_path,
+        media_type=mime,
+        content_disposition_type="inline",
+    )
 
 
 # ──────────────────────────────────────────────
-# Auth API routes
+# Admin router — all routes behind ADMIN_PATH_PREFIX
+# ──────────────────────────────────────────────
+
+admin_router = APIRouter()
+
+
+# ──────────────────────────────────────────────
+# Auth helpers
 # ──────────────────────────────────────────────
 
 def _get_client_ip(request: Request) -> str:
@@ -351,7 +395,30 @@ def _is_secure(request: Request) -> bool:
     return base.startswith("https") or request.url.scheme == "https"
 
 
-@app.post("/api/auth/login")
+# ──────────────────────────────────────────────
+# Admin HTML pages
+# ──────────────────────────────────────────────
+
+@admin_router.get("/login", include_in_schema=False)
+async def serve_login():
+    return _serve_html_with_prefix("login.html")
+
+
+@admin_router.get("/dashboard", include_in_schema=False)
+async def serve_dashboard(request: Request):
+    session_token = request.cookies.get("session")
+    if not session_token or not verify_session_token(session_token):
+        return RedirectResponse(
+            url=f"{settings.ADMIN_PATH_PREFIX}/login", status_code=302
+        )
+    return _serve_html_with_prefix("index.html")
+
+
+# ──────────────────────────────────────────────
+# Auth API
+# ──────────────────────────────────────────────
+
+@admin_router.post("/api/auth/login")
 async def auth_login(body: LoginBody, request: Request):
     try:
         ip = _get_client_ip(request)
@@ -377,6 +444,12 @@ async def auth_login(body: LoginBody, request: Request):
         try:
             from backend.telegram_bot import send_login_success
             await send_login_success(body.username, ip)
+        except RuntimeError as exc:
+            logger.warning(
+                "Bot not ready for login notification (RuntimeError): %s. "
+                "Vérifiez TELEGRAM_BOT_TOKEN et redéployez.",
+                exc,
+            )
         except Exception as exc:
             logger.warning("Could not send login success notification: %s", exc)
 
@@ -397,26 +470,29 @@ async def auth_login(body: LoginBody, request: Request):
 
     except Exception as exc:
         logger.exception("Unexpected error in auth_login: %s", exc)
-        return JSONResponse({"detail": "Erreur serveur"}, status_code=500)
+        return JSONResponse(
+            {"detail": f"Erreur serveur : {type(exc).__name__}"},
+            status_code=500,
+        )
 
 
-@app.post("/api/auth/logout")
+@admin_router.post("/api/auth/logout")
 async def auth_logout():
     resp = JSONResponse({"ok": True})
     resp.delete_cookie(key="session", path="/")
     return resp
 
 
-@app.get("/api/auth/me")
+@admin_router.get("/api/auth/me")
 async def auth_me(payload: dict = Depends(require_session)):
     return {"username": payload.get("sub")}
 
 
 # ──────────────────────────────────────────────
-# API routes
+# Campaign / link API routes
 # ──────────────────────────────────────────────
 
-@app.post("/api/upload", dependencies=[Depends(require_auth)])
+@admin_router.post("/api/upload", dependencies=[Depends(require_auth)])
 async def upload_campaign(
     file: UploadFile = File(...),
     name: str = Form(...),
@@ -448,13 +524,13 @@ async def upload_campaign(
     return {"campaign_id": campaign.id, "name": campaign.name}
 
 
-@app.get("/api/campaigns", dependencies=[Depends(require_auth)])
+@admin_router.get("/api/campaigns", dependencies=[Depends(require_auth)])
 def list_campaigns(db: Session = Depends(get_db)):
     campaigns = db.query(Campaign).all()
     return [_campaign_out(c) for c in campaigns]
 
 
-@app.post("/api/campaigns/{campaign_id}/links", dependencies=[Depends(require_auth)])
+@admin_router.post("/api/campaigns/{campaign_id}/links", dependencies=[Depends(require_auth)])
 def create_link(
     campaign_id: int,
     body: NewLinkBody,
@@ -483,7 +559,7 @@ def create_link(
     return {"slug": slug, "full_url": _make_full_url(slug, domain)}
 
 
-@app.delete("/api/links/{slug}", dependencies=[Depends(require_auth)])
+@admin_router.delete("/api/links/{slug}", dependencies=[Depends(require_auth)])
 def deactivate_link(slug: str, db: Session = Depends(get_db)):
     link = db.query(Link).filter(Link.slug == slug).first()
     if not link:
@@ -493,7 +569,7 @@ def deactivate_link(slug: str, db: Session = Depends(get_db)):
     return {"slug": slug, "is_active": False}
 
 
-@app.delete("/api/campaigns/{campaign_id}", dependencies=[Depends(require_auth)])
+@admin_router.delete("/api/campaigns/{campaign_id}", dependencies=[Depends(require_auth)])
 def delete_campaign(campaign_id: int, db: Session = Depends(get_db)):
     campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
     if not campaign:
@@ -507,7 +583,7 @@ def delete_campaign(campaign_id: int, db: Session = Depends(get_db)):
     return {"deleted": campaign_id}
 
 
-@app.get("/api/domains", dependencies=[Depends(require_auth)])
+@admin_router.get("/api/domains", dependencies=[Depends(require_auth)])
 def get_domains():
     all_domains = settings.get_all_domains()
     return {
@@ -516,7 +592,7 @@ def get_domains():
     }
 
 
-@app.get("/api/bot/status", dependencies=[Depends(require_auth)])
+@admin_router.get("/api/bot/status", dependencies=[Depends(require_auth)])
 async def bot_status():
     """Returns Telegram bot status information."""
     if not settings.TELEGRAM_BOT_TOKEN:
@@ -552,7 +628,7 @@ async def bot_status():
         }
 
 
-@app.post("/api/bot/test", dependencies=[Depends(require_auth)])
+@admin_router.post("/api/bot/test", dependencies=[Depends(require_auth)])
 async def bot_test():
     """Send a test message to all Telegram admins."""
     if not settings.TELEGRAM_BOT_TOKEN:
@@ -604,3 +680,7 @@ async def bot_test():
             {"success": False, "error": "Erreur lors de l'envoi du message test"},
             status_code=503,
         )
+
+
+# Include the admin router with the configured prefix
+app.include_router(admin_router, prefix=settings.ADMIN_PATH_PREFIX)

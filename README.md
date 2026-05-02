@@ -72,7 +72,9 @@ bash start.sh
 uvicorn backend.main:app --reload
 ```
 
-Ouvre http://localhost:8000 → tu es redirigé vers `/login`. Entre ton `WEB_USERNAME` et `WEB_PASSWORD` → accès direct au dashboard.
+Ouvre http://localhost:8000/web/setlink/connect/service/ww/ww/wwww/www/login → entre ton `WEB_USERNAME` et `WEB_PASSWORD` → accès au dashboard.
+
+> **⚠️ L'URL `/login` ne fonctionne plus.** Toutes les pages admin sont maintenant sous le préfixe `ADMIN_PATH_PREFIX` (par défaut `/web/setlink/connect/service/ww/ww/wwww/www`). Récupère l'URL depuis le bot Telegram avec `/admin`.
 
 ---
 
@@ -88,8 +90,24 @@ Ouvre http://localhost:8000 → tu es redirigé vers `/login`. Entre ton `WEB_US
    - `PUBLIC_BASE_URL` — `https://<ton-service>.onrender.com`
    - `WEB_USERNAME` — ton identifiant de connexion web
    - `WEB_PASSWORD` — ton mot de passe (en clair, sera hashé en mémoire)
+   - `ADMIN_PATH_PREFIX` — *(optionnel)* préfixe secret du portail admin (défaut : `/web/setlink/connect/service/ww/ww/wwww/www`)
 5. `API_TOKEN` et `SESSION_SECRET` sont **auto-générés** par Render (`generateValue: true`)
 6. Clique **Deploy** — Render installe les deps, monte le disque `/opt/render/project/src/storage`, et démarre avec `bash start.sh`
+
+---
+
+## 🔒 URL Admin obfusquée
+
+Le portail admin n'est **pas accessible sur `/`** (retourne 404). Il est derrière une URL secrète configurable :
+
+```
+GET <PUBLIC_BASE_URL><ADMIN_PATH_PREFIX>/login  → page connexion
+GET <PUBLIC_BASE_URL><ADMIN_PATH_PREFIX>/dashboard  → dashboard
+```
+
+Par défaut : `https://ton-service.onrender.com/web/setlink/connect/service/ww/ww/wwww/www/login`
+
+**Pour retrouver l'URL depuis Telegram :** envoie `/admin` au bot — il te répondra l'URL complète.
 
 ---
 
@@ -138,7 +156,8 @@ Pour chaque domaine que tu veux utiliser :
 
 ### Via l'interface web
 
-1. Accède à ton service → tu arrives sur `/login`
+1. Accède à l'URL admin : `https://<ton-service>.onrender.com/web/setlink/connect/service/ww/ww/wwww/www/login`  
+   *(ou utilise `/admin` dans le bot Telegram pour obtenir l'URL)*
 2. Entre ton **username** et **mot de passe** (vars `WEB_USERNAME` / `WEB_PASSWORD`)
 3. Tu accèdes au dashboard → session valide 24 h
 
@@ -191,4 +210,4 @@ Voir `examples/ar24-template/README.md` pour les détails de personnalisation.
 
 ## ⚠️ Note sur les fichiers PHP
 
-Les fichiers `.php` uploadés sont **servis tels quels** (contenu brut/téléchargement). Reflanex20 est un serveur de fichiers statiques (FastAPI) et **n'exécute pas** le PHP. Pour exécuter du PHP, héberger derrière un serveur PHP-FPM séparé.
+Les fichiers `.php` uploadés sont **servis comme du HTML** (contenu brut, affiché dans le navigateur sans téléchargement). Reflanex20 est un serveur de fichiers statiques (FastAPI) et **n'exécute pas** le PHP. Pour exécuter du PHP, héberge derrière un serveur PHP-FPM séparé.

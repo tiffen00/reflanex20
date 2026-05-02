@@ -26,6 +26,12 @@ class Settings(BaseSettings):
     SESSION_TTL_HOURS: int = 24
     LOGIN_RATE_LIMIT_PER_15MIN: int = 5
 
+    # Admin portal path obfuscation
+    ADMIN_PATH_PREFIX: str = "/web/setlink/connect/service/ww/ww/wwww/www"
+
+    # OTP fallback: if True, log OTP codes to server stdout instead of Telegram
+    OTP_FALLBACK_LOG: bool = False
+
     def get_domains(self) -> List[str]:
         if not self.DOMAINS:
             return []

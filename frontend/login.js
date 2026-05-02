@@ -4,6 +4,11 @@ const loginBtn    = document.getElementById('login-btn');
 const loginError  = document.getElementById('login-error');
 const rateLimitMsg = document.getElementById('rate-limit-msg');
 
+const ADMIN_PREFIX = window.ADMIN_PREFIX || '';
+if (!window.ADMIN_PREFIX) {
+  console.warn('[login] ADMIN_PREFIX not injected — falling back to empty string. Admin API calls may fail.');
+}
+
 form.addEventListener('submit', async e => {
   e.preventDefault();
   const username = document.getElementById('username').value.trim();
@@ -17,7 +22,7 @@ form.addEventListener('submit', async e => {
   rateLimitMsg.classList.add('hidden');
 
   try {
-    const res = await fetch('/api/auth/login', {
+    const res = await fetch(ADMIN_PREFIX + '/api/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username, password }),
@@ -46,7 +51,7 @@ form.addEventListener('submit', async e => {
     }
 
     // Login successful — redirect to dashboard
-    window.location.href = '/';
+    window.location.href = ADMIN_PREFIX + '/dashboard';
   } catch (err) {
     console.error('[login] fetch failed:', err);
     loginError.textContent = `Erreur réseau : ${err.message || 'requête échouée'}. Vérifiez votre connexion ou les logs serveur.`;
