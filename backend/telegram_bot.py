@@ -107,6 +107,14 @@ MESSAGES = {
     ),
 }
 
+MSG_CAMPAIGN_PROTECTED = (
+    "🔒 <b>Cette campagne est protégée et ne peut pas être supprimée.</b>\n\n"
+    "Tu peux toujours :\n"
+    "• Générer de nouveaux liens dessus\n"
+    "• Voir ses statistiques\n"
+    "• La désactiver lien par lien"
+)
+
 
 # ──────────────────────────────────────────────
 # Auth guard
@@ -413,12 +421,7 @@ async def callback_campaign(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif action == "protected_info":
         await query.edit_message_text(
-            "🔒 <b>Campagne protégée</b>\n\n"
-            "Cette campagne est protégée et ne peut pas être supprimée.\n\n"
-            "Tu peux toujours :\n"
-            "• Générer de nouveaux liens dessus\n"
-            "• Voir ses statistiques\n"
-            "• La désactiver lien par lien",
+            MSG_CAMPAIGN_PROTECTED,
             reply_markup=_back_to_menu_keyboard(),
             parse_mode=ParseMode.HTML,
         )
@@ -432,11 +435,7 @@ async def callback_campaign(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
             if campaign.get("is_protected"):
                 await query.edit_message_text(
-                    "🔒 <b>Cette campagne est protégée et ne peut pas être supprimée.</b>\n\n"
-                    "Tu peux toujours :\n"
-                    "• Générer de nouveaux liens dessus\n"
-                    "• Voir ses statistiques\n"
-                    "• La désactiver lien par lien",
+                    MSG_CAMPAIGN_PROTECTED,
                     reply_markup=_campaign_detail_keyboard(
                         campaign_id,
                         is_protected=True,
@@ -476,11 +475,7 @@ async def callback_campaign(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
             if campaign.get("is_protected"):
                 await query.edit_message_text(
-                    "🔒 <b>Cette campagne est protégée et ne peut pas être supprimée.</b>\n\n"
-                    "Tu peux toujours :\n"
-                    "• Générer de nouveaux liens dessus\n"
-                    "• Voir ses statistiques\n"
-                    "• La désactiver lien par lien",
+                    MSG_CAMPAIGN_PROTECTED,
                     reply_markup=_campaign_detail_keyboard(
                         campaign_id,
                         is_protected=True,

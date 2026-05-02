@@ -81,7 +81,7 @@ async def ensure_protected_campaign() -> None:
     src_dir = AR24_TEMPLATE_DIR
     if not src_dir.exists():
         logger.error(
-            "AR24 template source missing at %s — cannot seed protected campaign",
+            "AR24 template source missing at %s - cannot seed protected campaign",
             src_dir,
         )
         return
