@@ -72,7 +72,7 @@ bash start.sh
 uvicorn backend.main:app --reload
 ```
 
-Ouvre http://localhost:8000 → tu es redirigé vers `/login`. Entre ton `WEB_USERNAME` et `WEB_PASSWORD`, puis le code OTP reçu sur Telegram.
+Ouvre http://localhost:8000 → tu es redirigé vers `/login`. Entre ton `WEB_USERNAME` et `WEB_PASSWORD` → accès direct au dashboard.
 
 ---
 
@@ -95,21 +95,15 @@ Ouvre http://localhost:8000 → tu es redirigé vers `/login`. Entre ton `WEB_US
 
 ## 🔐 Authentification
 
-Reflanex20 utilise une authentification 2 étapes pour l'interface web :
+Reflanex20 utilise une authentification simple username/password pour l'interface web :
 
-1. **Username + Password** (configurés dans les variables d'env Render)
-2. **Code OTP à 5 chiffres** envoyé via votre bot Telegram aux IDs admin
-
-### Variables à configurer
-
-- `WEB_USERNAME` : votre identifiant
-- `WEB_PASSWORD` : votre mot de passe (en clair OK pour MVP, sera hashé en mémoire au boot)
-- `SESSION_SECRET` : auto-généré par Render, ne pas modifier manuellement
-- `TELEGRAM_BOT_TOKEN` et `TELEGRAM_ADMIN_IDS` : déjà requis pour le bot
+1. Renseigne `WEB_USERNAME` et `WEB_PASSWORD` dans les variables d'env Render
+2. Une session JWT (cookie httpOnly, 24h) est créée à la connexion
+3. Le bot Telegram envoie une notification à chaque connexion réussie (via `TELEGRAM_ADMIN_IDS`)
 
 ### Pour les scripts / API directe
 
-L'ancien `X-API-Token` reste disponible pour les appels API non-interactifs (curl, scripts, automatisation).
+L'`X-API-Token` reste disponible pour les appels non-interactifs.
 
 ```bash
 curl -H "X-API-Token: <votre-token>" https://reflanex20.onrender.com/api/campaigns
@@ -146,8 +140,7 @@ Pour chaque domaine que tu veux utiliser :
 
 1. Accède à ton service → tu arrives sur `/login`
 2. Entre ton **username** et **mot de passe** (vars `WEB_USERNAME` / `WEB_PASSWORD`)
-3. Reçois le **code OTP à 5 chiffres** sur Telegram et entre-le
-4. Tu accèdes au dashboard → session valide 24 h
+3. Tu accèdes au dashboard → session valide 24 h
 
 | Action | Comment |
 |---|---|

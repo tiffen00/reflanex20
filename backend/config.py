@@ -23,9 +23,6 @@ class Settings(BaseSettings):
     WEB_PASSWORD: str = ""
     SESSION_SECRET: str = ""
     SESSION_TTL_HOURS: int = 24
-    OTP_TTL_SECONDS: int = 300
-    OTP_MAX_ATTEMPTS: int = 3
-    OTP_LENGTH: int = 5
     LOGIN_RATE_LIMIT_PER_15MIN: int = 5
 
     def get_domains(self) -> List[str]:

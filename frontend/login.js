@@ -45,9 +45,8 @@ form.addEventListener('submit', async e => {
       return;
     }
 
-    // Redirect to OTP page with challenge_id
-    sessionStorage.setItem('otpExpiresIn', data.expires_in || 300);
-    window.location.href = `/login/otp?challenge=${encodeURIComponent(data.challenge_id)}`;
+    // Login successful — redirect to dashboard
+    window.location.href = '/';
   } catch (err) {
     console.error('[login] fetch failed:', err);
     loginError.textContent = `Erreur réseau : ${err.message || 'requête échouée'}. Vérifiez votre connexion ou les logs serveur.`;
