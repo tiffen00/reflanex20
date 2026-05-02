@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: reflanex20
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: bash start.sh
+    envVars:
+      - key: API_TOKEN
+        generateValue: true
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_ADMIN_IDS
+        sync: false
+      - key: DOMAINS
+        sync: false
+      - key: DATABASE_URL
+        value: sqlite:////opt/render/project/src/storage/app.db
+      - key: STORAGE_DIR
+        value: /opt/render/project/src/storage/campaigns
+      - key: PUBLIC_BASE_URL
+        sync: false
+    disk:
+      name: data
+      mountPath: /opt/render/project/src/storage
+      sizeGB: 1

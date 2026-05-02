@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual env
+venv/
+.venv/
+env/
+.env
+
+# Database
+*.db
+*.db-shm
+*.db-wal
+
+# Storage (campaigns data — not committed)
+storage/campaigns/
+
+# Logs
+*.log
+
+# Secrets
+.env
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
