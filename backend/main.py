@@ -30,7 +30,6 @@ from backend.auth import (
 )
 from backend.config import settings, get_resolved_token
 from backend.database import Campaign, Link, get_db, init_db
-from backend.otp_store import otp_store
 from backend.rate_limit import login_rate_limiter
 from backend.storage import StorageError, delete_campaign_files, get_file_path, validate_and_unzip
 from backend.utils import generate_slug, slugify
@@ -78,12 +77,12 @@ async def lifespan(app: FastAPI):
     if settings.TELEGRAM_BOT_TOKEN:
         logger.info("🤖 TELEGRAM_BOT_TOKEN: set")
     else:
-        logger.warning("🤖 TELEGRAM_BOT_TOKEN: not set — bot and OTP login will be disabled")
+        logger.warning("🤖 TELEGRAM_BOT_TOKEN: not set — bot will be disabled")
     admin_ids = settings.get_admin_ids()
     if admin_ids:
         logger.info("👥 TELEGRAM_ADMIN_IDS: set (%d admin(s))", len(admin_ids))
     else:
-        logger.warning("👥 TELEGRAM_ADMIN_IDS: not set — no admin will receive OTP codes")
+        logger.warning("👥 TELEGRAM_ADMIN_IDS: not set — no admin will receive login notifications")
 
     # Start Telegram bot if token is configured
     bot_task = None
@@ -177,11 +176,6 @@ class NewLinkBody(BaseModel):
 class LoginBody(BaseModel):
     username: str
     password: str
-
-
-class VerifyOTPBody(BaseModel):
-    challenge_id: str
-    code: str
 
 
 # ──────────────────────────────────────────────
@@ -282,14 +276,6 @@ async def serve_login():
     return JSONResponse({"error": "login.html not found"}, status_code=404)
 
 
-@app.get("/login/otp")
-async def serve_otp():
-    page = FRONTEND_DIR / "otp.html"
-    if page.exists():
-        return FileResponse(str(page))
-    return JSONResponse({"error": "otp.html not found"}, status_code=404)
-
-
 @app.get("/c/{slug}", include_in_schema=False)
 @app.get("/c/{slug}/", include_in_schema=False)
 async def serve_slug_root(slug: str, request: Request, db: Session = Depends(get_db)):
@@ -379,79 +365,33 @@ async def auth_login(body: LoginBody, request: Request):
             logger.warning("Failed login attempt for username=%r from IP %s", body.username, ip)
             return JSONResponse({"detail": "Invalid username or password"}, status_code=401)
 
-        # Create OTP challenge
-        challenge_id, plain_code = otp_store.create(body.username)
-        logger.info("OTP challenge created for username=%r from IP %s", body.username, ip)
+        logger.info("Successful login for username=%r from IP %s", body.username, ip)
 
-        # Send OTP via Telegram — strict: 503 if Telegram fails
+        # Send success notification (best-effort — never blocks login)
         try:
-            from backend.telegram_bot import send_otp_to_admins
-            await send_otp_to_admins(plain_code, body.username, ip)
+            from backend.telegram_bot import send_login_success
+            await send_login_success(body.username, ip)
         except Exception as exc:
-            logger.error("Failed to send OTP via Telegram: %s", exc)
-            return JSONResponse(
-                {"detail": "Le bot Telegram n'est pas configuré. Vérifiez les variables TELEGRAM_BOT_TOKEN et TELEGRAM_ADMIN_IDS."},
-                status_code=503,
-            )
+            logger.warning("Could not send login success notification: %s", exc)
 
-        return {"challenge_id": challenge_id, "expires_in": settings.OTP_TTL_SECONDS}
+        # Issue session JWT cookie
+        token = create_session_token(body.username)
+        secure = _is_secure(request)
+        resp = JSONResponse({"ok": True})
+        resp.set_cookie(
+            key="session",
+            value=token,
+            httponly=True,
+            secure=secure,
+            samesite="lax",
+            max_age=settings.SESSION_TTL_HOURS * 3600,
+            path="/",
+        )
+        return resp
 
     except Exception as exc:
         logger.exception("Unexpected error in auth_login: %s", exc)
         return JSONResponse({"detail": "Erreur serveur"}, status_code=500)
-
-
-@app.post("/api/auth/verify-otp")
-async def auth_verify_otp(body: VerifyOTPBody, request: Request):
-    ip = _get_client_ip(request)
-
-    result = otp_store.verify(body.challenge_id, body.code)
-
-    if result.status in ("not_found", "consumed", "expired"):
-        return JSONResponse({"detail": "OTP expired or not found. Please log in again."}, status_code=410)
-
-    if result.status == "exhausted":
-        logger.warning("OTP exhausted for challenge %s from IP %s", body.challenge_id, ip)
-        return JSONResponse(
-            {"detail": "Too many incorrect attempts. Please log in again."},
-            status_code=429,
-        )
-
-    if result.status == "wrong":
-        logger.warning(
-            "Wrong OTP for challenge %s from IP %s (%d attempt(s) left)",
-            body.challenge_id, ip, result.attempts_left,
-        )
-        return JSONResponse(
-            {"detail": "Wrong code", "attempts_left": result.attempts_left},
-            status_code=401,
-        )
-
-    # result.status == "ok"
-    username = result.username
-    logger.info("Successful OTP login for username=%r from IP %s", username, ip)
-
-    # Send success notification (best-effort)
-    try:
-        from backend.telegram_bot import send_login_success
-        await send_login_success(username, ip)
-    except Exception as exc:
-        logger.warning("Could not send login success notification: %s", exc)
-
-    # Issue session JWT cookie
-    token = create_session_token(username)
-    secure = _is_secure(request)
-    resp = JSONResponse({"ok": True})
-    resp.set_cookie(
-        key="session",
-        value=token,
-        httponly=True,
-        secure=secure,
-        samesite="lax",
-        max_age=settings.SESSION_TTL_HOURS * 3600,
-        path="/",
-    )
-    return resp
 
 
 @app.post("/api/auth/logout")
