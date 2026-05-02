@@ -37,7 +37,7 @@ async def lookup_country(ip: str) -> Optional[str]:
                 country = r.text.strip().upper()
                 _cache[ip] = country
                 if len(_cache) > 10000:
-                    # Evict oldest 10% (fixed 1000 entries) to avoid per-call eviction churn
+                    # Evict a fixed batch of 1000 entries to reduce per-insertion overhead
                     evict_count = 1000
                     keys_to_delete = list(_cache.keys())[:evict_count]
                     for key in keys_to_delete:

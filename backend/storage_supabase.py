@@ -1,5 +1,6 @@
 import io
 import logging
+import mimetypes
 import zipfile
 from typing import Optional
 
@@ -87,11 +88,13 @@ def upload_campaign(zip_bytes: bytes, campaign_name: str, version: int) -> tuple
             continue
         data = zf.read(member.filename)
         upload_path = f"{storage_path}/{rel}"
+        mime_type, _ = mimetypes.guess_type(rel)
+        content_type = mime_type or "application/octet-stream"
         try:
             sb.storage.from_(BUCKET).upload(
                 upload_path,
                 data,
-                {"content-type": "application/octet-stream", "upsert": "true"},
+                {"content-type": content_type, "upsert": "true"},
             )
         except Exception as e:
             logger.warning("Upload failed for %s: %s — trying update", upload_path, e)

@@ -357,13 +357,17 @@ async def _serve_campaign_file(slug: str, path: str, request: Request):
         # Normalize 'Z' suffix and ensure timezone-aware parsing
         if raw.endswith("Z"):
             raw = raw[:-1] + "+00:00"
+        expires: Optional[datetime] = None
         try:
             expires = datetime.fromisoformat(raw)
         except ValueError:
-            # Strip microseconds if present before appending offset
-            base = raw.split(".")[0] if "." in raw else raw
-            expires = datetime.fromisoformat(base + "+00:00")
-        if datetime.now(timezone.utc) > expires:
+            try:
+                # Strip sub-second precision before re-parsing
+                base = raw.split(".")[0] if "." in raw else raw
+                expires = datetime.fromisoformat(base + "+00:00")
+            except ValueError:
+                logger.warning("Could not parse expires_at value: %s", link["expires_at"])
+        if expires and datetime.now(timezone.utc) > expires:
             raise HTTPException(status_code=403, detail="Lien expiré")
 
     # Geo-blocking
@@ -401,9 +405,10 @@ async def _serve_campaign_file(slug: str, path: str, request: Request):
     else:
         file_rel = path_stripped
 
-    # Security: prevent path traversal using normpath containment check
+    # Security: prevent path traversal — check every component for '..'
     normalized = posixpath.normpath(file_rel)
-    if normalized in (".", "..") or normalized.startswith("..") or "/.." in normalized:
+    path_components = normalized.split("/")
+    if ".." in path_components or normalized.startswith("/"):
         raise HTTPException(status_code=403, detail="Chemin invalide")
 
     # Download from Supabase Storage
