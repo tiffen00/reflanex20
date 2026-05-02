@@ -175,6 +175,7 @@ def _campaigns_keyboard(
 def _campaign_detail_keyboard(campaign_id: int, has_versions: bool = False, is_protected: bool = False) -> InlineKeyboardMarkup:
     buttons = [
         [InlineKeyboardButton("🔗 Nouveau lien", callback_data=f"link:new:{campaign_id}")],
+        [InlineKeyboardButton("📋 Mes liens", callback_data=f"campaign:links:{campaign_id}")],
         [InlineKeyboardButton("📊 Statistiques", callback_data=f"stats:show:{campaign_id}")],
         [InlineKeyboardButton("📊 Graph 7 jours", callback_data=f"graph:campaign:{campaign_id}")],
     ]
@@ -195,6 +196,18 @@ def _domain_keyboard(campaign_id: int) -> InlineKeyboardMarkup:
         label = f"🌟 {d['domain']} (par défaut)" if d["is_default"] else d["domain"]
         domain_val = d["domain"]
         buttons.append([InlineKeyboardButton(label, callback_data=f"link:gen:{campaign_id}:{domain_val}")])
+    buttons.append([InlineKeyboardButton("◀ Retour", callback_data=f"campaign:detail:{campaign_id}")])
+    return InlineKeyboardMarkup(buttons)
+
+
+def _links_keyboard(links: list[dict], campaign_id: int) -> InlineKeyboardMarkup:
+    """Show individual links as clickable buttons for per-link management."""
+    buttons = []
+    for link in links:
+        status = "✅" if link.get("is_active") else "❌"
+        label = f"{status} {link['slug']}"
+        buttons.append([InlineKeyboardButton(label, callback_data=f"link:detail:{link['id']}")])
+    buttons.append([InlineKeyboardButton("🔗 Nouveau lien", callback_data=f"link:new:{campaign_id}")])
     buttons.append([InlineKeyboardButton("◀ Retour", callback_data=f"campaign:detail:{campaign_id}")])
     return InlineKeyboardMarkup(buttons)
 
@@ -668,6 +681,36 @@ async def callback_campaign(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ]),
             parse_mode=ParseMode.HTML,
         )
+
+    elif action == "links":
+        campaign_id = int(param)
+        try:
+            campaign = dao.get_campaign(campaign_id)
+            if not campaign:
+                await query.edit_message_text("❌ Campagne introuvable.", reply_markup=_back_to_menu_keyboard())
+                return
+            links = dao.list_links_for_campaign(campaign_id)
+            if not links:
+                await query.edit_message_text(
+                    f"🔗 <b>Liens — {campaign['name']}</b>\n\nAucun lien créé pour cette campagne.",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🔗 Nouveau lien", callback_data=f"link:new:{campaign_id}")],
+                        [InlineKeyboardButton("◀ Retour", callback_data=f"campaign:detail:{campaign_id}")],
+                    ]),
+                    parse_mode=ParseMode.HTML,
+                )
+                return
+            active = sum(1 for l in links if l.get("is_active"))
+            await query.edit_message_text(
+                f"🔗 <b>Liens — {campaign['name']}</b>\n\n"
+                f"{len(links)} lien(s) · {active} actif(s)\n\n"
+                "Clique sur un lien pour accéder au géo-blocage, alertes, protection et graphiques :",
+                reply_markup=_links_keyboard(links, campaign_id),
+                parse_mode=ParseMode.HTML,
+            )
+        except Exception as exc:
+            logger.exception("campaign links error: %s", exc)
+            await query.edit_message_text(f"⚠️ Erreur.\nDétail : {exc}", reply_markup=_back_to_menu_keyboard())
 
 
 # ──────────────────────────────────────────────
