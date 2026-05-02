@@ -2,7 +2,7 @@ services:
   - type: web
     name: reflanex20
     runtime: python
-    plan: free
+    plan: starter
     buildCommand: pip install -r requirements.txt
     startCommand: bash start.sh
     envVars:
@@ -34,6 +34,8 @@ services:
         value: /web/setlink/connect/service/ww/ww/wwww/www
       - key: OTP_FALLBACK_LOG
         value: "false"
+      - key: SEED_DEFAULT_CAMPAIGN
+        value: "true"
     disk:
       name: data
       mountPath: /opt/render/project/src/storage
