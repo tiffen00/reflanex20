@@ -2,6 +2,40 @@
 
 Système web + bot Telegram pour gérer des campagnes marketing : upload de zips, génération de liens uniques à la volée, multi-domaines, stats de clics. Déployable en 5 minutes sur **Render**.
 
+> **v2.0** — Migré vers Supabase (Postgres + Storage). SQLite et le disque local ne sont plus utilisés.
+
+---
+
+## 🆕 Migration Supabase (v2.0)
+
+Reflanex20 utilise désormais **Supabase** comme backend de données et de stockage :
+
+- **Supabase Postgres** remplace SQLite/SQLAlchemy — toutes les données (campagnes, liens, clics) sont stockées dans des tables Postgres.
+- **Supabase Storage** (bucket `campaigns`) remplace le disque local — les fichiers des campagnes sont uploadés et servis depuis le bucket S3-compatible.
+
+### Nouvelles fonctionnalités (v2.0)
+
+| Fonctionnalité | Description |
+|---|---|
+| 🌍 **Géo-blocage** | Bloque ou autorise des pays par codes ISO sur chaque lien |
+| 📊 **Graphiques clics** | Graphiques en barres (7 jours) par campagne ou lien via Matplotlib |
+| 🔢 **Limite de clics** | Désactive automatiquement un lien après N clics |
+| ⏰ **Expiration de liens** | Désactive les liens après une date/heure configurable |
+| 🔔 **Alertes clics** | Notification Telegram quand un lien dépasse un seuil de clics |
+| 📦 **Versioning de campagnes** | Crée v2, v3... d'une campagne en migrant les liens existants |
+
+### Schéma Supabase
+
+Exécute `supabase/schema.sql` dans l'éditeur SQL de ton projet Supabase pour créer les tables.
+
+### Variables d'environnement Supabase
+
+```
+SUPABASE_URL=https://xxxxx.supabase.co
+SUPABASE_SERVICE_KEY=eyJ...  # clé service (pas la clé anon)
+SUPABASE_BUCKET=campaigns
+```
+
 ---
 
 ## 1. Présentation
@@ -36,14 +70,17 @@ En marketing, chaque campagne génère un lien qui finit par être blacklisté o
          │  - POST /api/upload          │
          │  - POST /api/campaigns/:id/links │
          │  - GET  /c/{slug}/           │
-         │  - SQLite (SQLAlchemy)       │
+         │  - DAO layer (dao.py)        │
          └──────────┬───────────────────┘
                     │
-                    ▼
-         ┌──────────────────────────────┐
-         │  storage/campaigns/          │
-         │  <slug-dir>/index.html ...   │
-         └──────────────────────────────┘
+          ┌─────────┴─────────┐
+          ▼                   ▼
+┌──────────────────┐  ┌──────────────────────┐
+│ Supabase Postgres │  │  Supabase Storage    │
+│ campaigns, links  │  │  bucket: campaigns   │
+│ clicks, geo_rules │  │  <name>/v<n>/...     │
+│ click_alerts      │  └──────────────────────┘
+└──────────────────┘
 ```
 
 ---
@@ -84,6 +121,8 @@ Ouvre http://localhost:8000/web/setlink/connect/service/ww/ww/wwww/www/login →
 2. Va sur https://render.com → **New Web Service**
 3. Connecte ton repo GitHub → Render détecte automatiquement `render.yaml`
 4. Dans **Environment**, renseigne :
+   - `SUPABASE_URL` — URL de ton projet Supabase
+   - `SUPABASE_SERVICE_KEY` — clé service Supabase (Settings → API)
    - `TELEGRAM_BOT_TOKEN` — token donné par @BotFather
    - `TELEGRAM_ADMIN_IDS` — ton ID Telegram (voir @userinfobot)
    - `DOMAINS` — tes domaines séparés par des virgules
@@ -91,8 +130,10 @@ Ouvre http://localhost:8000/web/setlink/connect/service/ww/ww/wwww/www/login →
    - `WEB_USERNAME` — ton identifiant de connexion web
    - `WEB_PASSWORD` — ton mot de passe (en clair, sera hashé en mémoire)
    - `ADMIN_PATH_PREFIX` — *(optionnel)* préfixe secret du portail admin (défaut : `/web/setlink/connect/service/ww/ww/wwww/www`)
-5. `API_TOKEN` et `SESSION_SECRET` sont **auto-générés** par Render (`generateValue: true`)
-6. Clique **Deploy** — Render installe les deps, monte le disque `/opt/render/project/src/storage`, et démarre avec `bash start.sh`
+5. `SESSION_SECRET` est **auto-généré** par Render (`generateValue: true`)
+6. Exécute `supabase/schema.sql` dans l'éditeur SQL de ton projet Supabase
+7. Crée le bucket `campaigns` dans Supabase Storage (Settings → Storage)
+8. Clique **Deploy**
 
 ---
 
