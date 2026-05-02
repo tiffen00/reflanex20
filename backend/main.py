@@ -29,7 +29,7 @@ from backend.auth import (
     verify_session_token,
     get_session_secret,
 )
-from backend.config import settings, get_resolved_token
+from backend.config import settings, get_resolved_token, get_antibot_secret
 import backend.dao as dao
 from backend.db import get_supabase
 from backend.geoip import lookup_country
@@ -38,6 +38,10 @@ from backend.rate_limit import login_rate_limiter
 import backend.storage_supabase as storage_sb
 from backend.storage import StorageError
 from backend.utils import generate_slug, slugify
+from backend.antibot.detector import detect_bot
+from backend.antibot.cookies import COOKIE_NAME, make_cookie, verify_cookie
+from backend.antibot.challenge import make_challenge_token, verify_challenge_token, render_challenge_page
+from backend.antibot.rate_limit import antibot_rate_limiter
 
 logger = logging.getLogger(__name__)
 
@@ -125,6 +129,24 @@ async def lifespan(app: FastAPI):
     if settings.OTP_FALLBACK_LOG:
         logger.warning("⚠️  OTP_FALLBACK_LOG=true — OTP codes will be logged to stdout (dev mode)")
 
+    # Anti-bot: initialise rate limiter config + warn if secret not set
+    if settings.ANTIBOT_ENABLED:
+        antibot_rate_limiter.configure(
+            max_requests=settings.ANTIBOT_RATE_LIMIT_MAX,
+            window_seconds=settings.ANTIBOT_RATE_LIMIT_WINDOW_SEC,
+        )
+        if not settings.ANTIBOT_SECRET:
+            logger.warning(
+                "⚠️  ANTIBOT_SECRET not set — auto-generating ephemeral secret. "
+                "Set ANTIBOT_SECRET env var for stable cookie verification across restarts."
+            )
+        logger.info(
+            "🛡️  Anti-bot protection ENABLED (default level: %s)",
+            settings.ANTIBOT_DEFAULT_LEVEL,
+        )
+    else:
+        logger.info("🛡️  Anti-bot protection DISABLED (ANTIBOT_ENABLED=false)")
+
     # Start Telegram bot if token is configured
     bot_task = None
     if settings.TELEGRAM_BOT_TOKEN:
@@ -173,6 +195,100 @@ app = FastAPI(title="Reflanex20", version="2.0.0", lifespan=lifespan)
 
 if FRONTEND_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
+
+
+# ──────────────────────────────────────────────
+# Anti-bot middleware
+# ──────────────────────────────────────────────
+
+@app.middleware("http")
+async def antibot_middleware(request: Request, call_next):
+    """Layer 1 + Layer 2 anti-bot protection for /c/* campaign routes."""
+    path = request.url.path
+
+    # Only apply on /c/… campaign routes
+    if not path.startswith("/c/"):
+        return await call_next(request)
+
+    # Skip the _verify endpoint itself (handled by its own route)
+    if path.endswith("/_verify"):
+        return await call_next(request)
+
+    if not settings.ANTIBOT_ENABLED:
+        return await call_next(request)
+
+    # Extract slug from path: /c/<slug>/…
+    parts = path.split("/")
+    slug = parts[2] if len(parts) > 2 and parts[2] else None
+    if not slug:
+        return await call_next(request)
+
+    # Fast pre-check: UA + headers before any DB lookup.
+    # This catches the most obvious bots without touching the database.
+    # Use "light" level to skip rate limiting (handled in the full check below).
+    fast_check = detect_bot(request, "light")
+    if fast_check.is_bot:
+        asyncio.create_task(_log_bot_hit_async(request, slug, fast_check))
+        return RedirectResponse(settings.ANTIBOT_REDIRECT_URL, status_code=302)
+
+    # Determine protection level for this link
+    protection_level = settings.ANTIBOT_DEFAULT_LEVEL
+    try:
+        link = dao.get_link_by_slug(slug)
+        if link is None:
+            # Link not found — let the route handler return 404
+            return await call_next(request)
+        protection_level = link.get("protection_level") or settings.ANTIBOT_DEFAULT_LEVEL
+    except Exception as exc:
+        logger.warning("antibot_middleware: failed to fetch link for slug %r: %s", slug, exc)
+
+    if protection_level == "off":
+        return await call_next(request)
+
+    # Full Layer 1 check (may include rate limiting based on level)
+    detection = detect_bot(request, protection_level)
+    if detection.is_bot:
+        asyncio.create_task(_log_bot_hit_async(request, slug, detection))
+        return RedirectResponse(settings.ANTIBOT_REDIRECT_URL, status_code=302)
+
+    # Layer 2: JS challenge (only for "maximum" level)
+    if protection_level == "maximum":
+        cookie_val = request.cookies.get(COOKIE_NAME)
+        antibot_secret = get_antibot_secret()
+        if not verify_cookie(slug, cookie_val, antibot_secret):
+            token = make_challenge_token(slug, antibot_secret)
+            html = render_challenge_page(slug, token)
+            return HTMLResponse(content=html, status_code=200)
+
+    return await call_next(request)
+
+
+async def _log_bot_hit_async(request: Request, slug: str, detection) -> None:
+    """Non-blocking bot hit logging."""
+    try:
+        ua = request.headers.get("user-agent", "")
+        forwarded_for = request.headers.get("x-forwarded-for", "")
+        ip = forwarded_for.split(",")[0].strip() if forwarded_for else (
+            request.client.host if request.client else "unknown"
+        )
+        country: Optional[str] = None
+        try:
+            country = await lookup_country(ip)
+        except Exception:
+            pass
+        link = dao.get_link_by_slug(slug)
+        link_id = link["id"] if link else None
+        dao.log_bot_hit(
+            slug=slug,
+            ip=ip,
+            user_agent=ua,
+            country=country,
+            reason=detection.reason or "unknown",
+            score=detection.score,
+            link_id=link_id,
+        )
+    except Exception as exc:
+        logger.warning("Failed to log bot hit: %s", exc)
 
 
 # ──────────────────────────────────────────────
@@ -338,6 +454,70 @@ async def serve_slug_root(slug: str, request: Request):
 @app.get("/c/{slug}/{path:path}", include_in_schema=False)
 async def serve_slug_path(slug: str, path: str, request: Request):
     return await _serve_campaign_file(slug, path, request)
+
+
+class VerifyBody(BaseModel):
+    token: Optional[str] = None
+    score: Optional[int] = None
+    ts: Optional[int] = None
+    fail: Optional[bool] = None
+    reason: Optional[str] = None
+
+
+@app.post("/c/{slug}/_verify", include_in_schema=False)
+async def verify_challenge(slug: str, body: VerifyBody, request: Request):
+    """Process JS challenge result from the client."""
+    ua = request.headers.get("user-agent", "")
+    forwarded_for = request.headers.get("x-forwarded-for", "")
+    ip = forwarded_for.split(",")[0].strip() if forwarded_for else (
+        request.client.host if request.client else "unknown"
+    )
+
+    # Client reported a failure
+    if body.fail:
+        reason = body.reason or "client_fail"
+        try:
+            link = dao.get_link_by_slug(slug)
+            link_id = link["id"] if link else None
+            dao.log_bot_hit(
+                slug=slug, ip=ip, user_agent=ua,
+                country=None, reason=f"challenge_fail:{reason}",
+                score=0, link_id=link_id,
+            )
+        except Exception as exc:
+            logger.warning("verify_challenge: failed to log bot hit: %s", exc)
+        return RedirectResponse(settings.ANTIBOT_REDIRECT_URL, status_code=302)
+
+    # Validate the HMAC token
+    antibot_secret = get_antibot_secret()
+    token = body.token or ""
+    if not verify_challenge_token(slug, token, antibot_secret):
+        try:
+            link = dao.get_link_by_slug(slug)
+            link_id = link["id"] if link else None
+            dao.log_bot_hit(
+                slug=slug, ip=ip, user_agent=ua,
+                country=None, reason="invalid_challenge_token",
+                score=0, link_id=link_id,
+            )
+        except Exception as exc:
+            logger.warning("verify_challenge: failed to log bot hit: %s", exc)
+        return JSONResponse({"detail": "invalid_token"}, status_code=403)
+
+    # Challenge passed — set verification cookie
+    cookie_val = make_cookie(slug, antibot_secret)
+    secure = _is_secure(request)
+    response = JSONResponse({"ok": True})
+    response.set_cookie(
+        key=COOKIE_NAME,
+        value=cookie_val,
+        max_age=3600,
+        httponly=True,
+        samesite="lax",
+        secure=secure,
+        path=f"/c/{slug}",
+    )
+    return response
 
 
 async def _serve_campaign_file(slug: str, path: str, request: Request):

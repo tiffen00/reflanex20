@@ -136,6 +136,9 @@ def _main_menu_keyboard() -> InlineKeyboardMarkup:
             InlineKeyboardButton("📊 Statistiques", callback_data="menu:stats"),
         ],
         [
+            InlineKeyboardButton("🛡️ Protection anti-bot", callback_data="menu:antibot"),
+        ],
+        [
             InlineKeyboardButton("🔐 URL Admin", callback_data="menu:admin"),
             InlineKeyboardButton("❓ Aide", callback_data="menu:help"),
         ],
@@ -355,10 +358,171 @@ async def callback_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         await query.edit_message_text(msg, reply_markup=_back_to_menu_keyboard(), parse_mode=ParseMode.HTML)
 
+    elif action == "antibot":
+        await _show_antibot_stats(query)
+
 
 # ──────────────────────────────────────────────
-# Campaign callbacks
+# Anti-bot callbacks
 # ──────────────────────────────────────────────
+
+async def _show_antibot_stats(query) -> None:
+    """Display global anti-bot stats for the last 24h."""
+    try:
+        stats = dao.get_bot_hits_stats(hours=24)
+        total = stats.get("total", 0)
+        by_reason = stats.get("by_reason", {})
+
+        reason_labels = {
+            "blocked_ua": "Bad User-Agent",
+            "missing_ua": "User-Agent absent",
+            "suspicious_headers": "Headers suspects",
+            "rate_limit": "Rate limit",
+            "challenge_fail": "Challenge JS échoué",
+            "invalid_challenge_token": "Token challenge invalide",
+            "non_get_method": "Méthode HTTP suspecte",
+        }
+
+        lines = [
+            "🛡️ <b>Protection anti-bot</b>\n",
+            f"Bots bloqués (24h) : <b>{total}</b>",
+        ]
+        if by_reason:
+            lines.append("")
+            for key, count in sorted(by_reason.items(), key=lambda x: -x[1]):
+                label = reason_labels.get(key, key)
+                lines.append(f"  • {label} : {count}")
+
+        msg = "\n".join(lines)
+        await query.edit_message_text(
+            msg,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("📋 50 derniers bots", callback_data="antibot:recent:0")],
+                [InlineKeyboardButton("◀ Menu", callback_data="menu:main")],
+            ]),
+            parse_mode=ParseMode.HTML,
+        )
+    except Exception as exc:
+        logger.exception("antibot stats error: %s", exc)
+        await query.edit_message_text(
+            f"⚠️ Erreur.\nDétail : {exc}",
+            reply_markup=_back_to_menu_keyboard(),
+        )
+
+
+async def callback_antibot(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    if not is_telegram_admin(query.from_user.id):
+        await query.edit_message_text("🚫 Accès refusé.")
+        return
+
+    parts = query.data.split(":", 2)
+    action = parts[1] if len(parts) > 1 else ""
+    param = parts[2] if len(parts) > 2 else ""
+    logger.info("Callback antibot:%s param=%s from user %s", action, param, query.from_user.id)
+
+    if action == "link":
+        # Per-link protection level config
+        link_id = int(param)
+        try:
+            link = dao.get_link_by_id(link_id)
+            if not link:
+                await query.edit_message_text("❌ Lien introuvable.", reply_markup=_back_to_menu_keyboard())
+                return
+            current_level = link.get("protection_level") or "standard"
+            level_labels = {
+                "off": "❌ Désactivé",
+                "light": "🔆 Léger (UA + headers)",
+                "standard": "🛡️ Standard (Couche 1)",
+                "maximum": "🔒 Maximum (+ Challenge JS)",
+            }
+            current_label = level_labels.get(current_level, current_level)
+            msg = (
+                f"🛡️ <b>Protection — <code>{link['slug']}</code></b>\n\n"
+                f"Niveau actuel : <b>{current_label}</b>\n\n"
+                "Choisis le niveau de protection :"
+            )
+            await query.edit_message_text(
+                msg,
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("❌ Désactivé", callback_data=f"antibot:setlevel:{link_id}:off")],
+                    [InlineKeyboardButton("🔆 Léger", callback_data=f"antibot:setlevel:{link_id}:light")],
+                    [InlineKeyboardButton("🛡️ Standard", callback_data=f"antibot:setlevel:{link_id}:standard")],
+                    [InlineKeyboardButton("🔒 Maximum", callback_data=f"antibot:setlevel:{link_id}:maximum")],
+                    [InlineKeyboardButton("◀ Retour", callback_data=f"link:detail:{link_id}")],
+                ]),
+                parse_mode=ParseMode.HTML,
+            )
+        except Exception as exc:
+            logger.exception("antibot link error: %s", exc)
+            await query.edit_message_text(f"⚠️ Erreur.\nDétail : {exc}", reply_markup=_back_to_menu_keyboard())
+
+    elif action == "setlevel":
+        # Format: antibot:setlevel:<link_id>:<level>
+        sub_parts = query.data.split(":", 3)
+        link_id = int(sub_parts[2]) if len(sub_parts) > 2 else 0
+        level = sub_parts[3] if len(sub_parts) > 3 else "standard"
+        valid_levels = ("off", "light", "standard", "maximum")
+        if level not in valid_levels:
+            level = "standard"
+        try:
+            link = dao.get_link_by_id(link_id)
+            if not link:
+                await query.edit_message_text("❌ Lien introuvable.", reply_markup=_back_to_menu_keyboard())
+                return
+            dao.update_link_protection_level(link["slug"], level)
+            level_labels = {
+                "off": "❌ Désactivé",
+                "light": "🔆 Léger",
+                "standard": "🛡️ Standard",
+                "maximum": "🔒 Maximum",
+            }
+            await query.edit_message_text(
+                f"✅ Protection du lien <code>{link['slug']}</code> définie sur : <b>{level_labels.get(level, level)}</b>",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("◀ Retour lien", callback_data=f"link:detail:{link_id}")],
+                    [InlineKeyboardButton("◀ Menu", callback_data="menu:main")],
+                ]),
+                parse_mode=ParseMode.HTML,
+            )
+        except Exception as exc:
+            logger.exception("antibot setlevel error: %s", exc)
+            await query.edit_message_text(f"⚠️ Erreur.\nDétail : {exc}", reply_markup=_back_to_menu_keyboard())
+
+    elif action == "recent":
+        try:
+            hits = dao.get_bot_hits_recent(limit=50)
+            if not hits:
+                await query.edit_message_text(
+                    "🛡️ <b>Derniers bots bloqués</b>\n\nAucun bot enregistré.",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("◀ Retour", callback_data="menu:antibot")],
+                    ]),
+                    parse_mode=ParseMode.HTML,
+                )
+                return
+
+            lines = ["🛡️ <b>50 derniers bots bloqués</b>\n"]
+            for h in hits[:20]:  # limit to 20 for Telegram message length
+                ua_short = (h.get("user_agent") or "—")[:40]
+                reason_short = (h.get("reason") or "—")[:30]
+                ts = (h.get("hit_at") or "")[:16].replace("T", " ")
+                lines.append(f"• <code>{h.get('slug','?')}</code> | {reason_short} | {ua_short} | {ts}")
+
+            if len(hits) > 20:
+                lines.append(f"\n<i>… et {len(hits) - 20} autre(s)</i>")
+
+            await query.edit_message_text(
+                "\n".join(lines),
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("◀ Retour stats", callback_data="menu:antibot")],
+                ]),
+                parse_mode=ParseMode.HTML,
+            )
+        except Exception as exc:
+            logger.exception("antibot recent error: %s", exc)
+            await query.edit_message_text(f"⚠️ Erreur.\nDétail : {exc}", reply_markup=_back_to_menu_keyboard())
 
 async def callback_campaign(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -560,6 +724,7 @@ async def callback_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=InlineKeyboardMarkup([
                     [InlineKeyboardButton("📊 Graph 7 jours", callback_data=f"graph:link:{link_id}")],
                     [InlineKeyboardButton("🌍 Géo-blocage", callback_data=f"geo:show:{link_id}")],
+                    [InlineKeyboardButton("🛡️ Protection", callback_data=f"antibot:link:{link_id}")],
                     [InlineKeyboardButton("🔔 Configurer alerte", callback_data=f"alert:add:{link_id}")],
                     [InlineKeyboardButton("🗑 Désactiver", callback_data=f"link:deactivate:{link_id}")],
                     [InlineKeyboardButton("◀ Retour", callback_data=f"campaign:detail:{link['campaign_id']}")],
@@ -1338,6 +1503,7 @@ def build_application() -> Application:
     app.add_handler(CallbackQueryHandler(callback_geo, pattern=r"^geo:"))
     app.add_handler(CallbackQueryHandler(callback_alert, pattern=r"^alert:"))
     app.add_handler(CallbackQueryHandler(callback_version, pattern=r"^version:"))
+    app.add_handler(CallbackQueryHandler(callback_antibot, pattern=r"^antibot:"))
 
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))

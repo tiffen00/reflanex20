@@ -40,3 +40,15 @@ services:
         value: "false"
       - key: MAX_ZIP_SIZE_MB
         value: "50"
+      - key: ANTIBOT_ENABLED
+        value: "true"
+      - key: ANTIBOT_SECRET
+        generateValue: true
+      - key: ANTIBOT_DEFAULT_LEVEL
+        value: standard
+      - key: ANTIBOT_REDIRECT_URL
+        value: https://www.google.com/
+      - key: ANTIBOT_RATE_LIMIT_WINDOW_SEC
+        value: "10"
+      - key: ANTIBOT_RATE_LIMIT_MAX
+        value: "5"
