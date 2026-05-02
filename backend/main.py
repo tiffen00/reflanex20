@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import List, Optional
@@ -14,7 +15,7 @@ from fastapi import (
     UploadFile,
     File,
 )
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -45,7 +46,9 @@ def _serve_html_with_prefix(filename: str) -> HTMLResponse:
     if not page.exists():
         raise HTTPException(status_code=404, detail=f"{filename} not found")
     content = page.read_text(encoding="utf-8")
-    content = content.replace("__ADMIN_PREFIX__", settings.ADMIN_PATH_PREFIX)
+    # Sanitize prefix: only allow URL-safe path chars (alphanumeric, /, -, _)
+    safe_prefix = re.sub(r"[^a-zA-Z0-9/_\-]", "", settings.ADMIN_PATH_PREFIX)
+    content = content.replace("__ADMIN_PREFIX__", safe_prefix)
     return HTMLResponse(content)
 
 
@@ -64,7 +67,7 @@ async def lifespan(app: FastAPI):
     # Log / auto-generate API token
     token = get_resolved_token()
     if not settings.API_TOKEN:
-        masked = token[:4] + "..." + token[-4:]
+        masked = token[:4] + "..."
         logger.warning(
             "🔑 API_TOKEN not set — auto-generated. "
             "Set API_TOKEN env var. Token prefix: %s",
@@ -353,10 +356,10 @@ async def _serve_campaign_file(slug: str, path: str, request: Request, db: Sessi
 
     # Detect MIME and always serve inline (never force download)
     mime = guess_inline_content_type(file_path)
-    return Response(
-        content=file_path.read_bytes(),
+    return FileResponse(
+        str(file_path),
         media_type=mime,
-        headers={"Content-Disposition": "inline"},
+        content_disposition_type="inline",
     )
 
 

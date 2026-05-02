@@ -5,6 +5,9 @@ const loginError  = document.getElementById('login-error');
 const rateLimitMsg = document.getElementById('rate-limit-msg');
 
 const ADMIN_PREFIX = window.ADMIN_PREFIX || '';
+if (!window.ADMIN_PREFIX) {
+  console.warn('[login] ADMIN_PREFIX not injected — falling back to empty string. Admin API calls may fail.');
+}
 
 form.addEventListener('submit', async e => {
   e.preventDefault();

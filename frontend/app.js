@@ -3,6 +3,9 @@ let activeCampaignId = null;
 let domains = [];
 
 const ADMIN_PREFIX = window.ADMIN_PREFIX || '';
+if (!window.ADMIN_PREFIX) {
+  console.warn('[app] ADMIN_PREFIX not injected — falling back to empty string. Admin API calls may fail.');
+}
 
 /* ─── DOM refs ─── */
 const app            = document.getElementById('app');
