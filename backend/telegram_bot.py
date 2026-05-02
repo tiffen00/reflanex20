@@ -37,6 +37,13 @@ _bot_username: Optional[str] = None
 WAITING_FOR_ZIP = "waiting_for_zip"
 PENDING_CAMPAIGN_ID = "pending_campaign_id"
 
+
+def _admin_url() -> str:
+    """Return the full admin login URL, avoiding double slashes."""
+    base = settings.PUBLIC_BASE_URL.rstrip("/")
+    prefix = settings.ADMIN_PATH_PREFIX.rstrip("/")
+    return f"{base}{prefix}/login"
+
 # ──────────────────────────────────────────────
 # Centralized message texts
 # ──────────────────────────────────────────────
@@ -342,7 +349,7 @@ async def callback_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     elif action == "admin":
-        admin_url = f"{settings.PUBLIC_BASE_URL}{settings.ADMIN_PATH_PREFIX}/login"
+        admin_url = _admin_url()
         msg = (
             "🔐 <b>URL d'administration web</b>\n\n"
             f"<code>{admin_url}</code>\n\n"
@@ -913,7 +920,7 @@ async def cmd_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Send the obfuscated admin URL to admins only."""
     if not await _guard(update, context):
         return
-    admin_url = f"{settings.PUBLIC_BASE_URL}{settings.ADMIN_PATH_PREFIX}/login"
+    admin_url = _admin_url()
     await update.message.reply_html(
         "🔐 <b>URL d'administration web</b>\n\n"
         f"<code>{admin_url}</code>\n\n"

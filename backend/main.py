@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 import re
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -354,10 +355,16 @@ async def _serve_campaign_file(slug: str, path: str, request: Request, db: Sessi
     if file_path is None:
         raise HTTPException(status_code=404, detail="Fichier introuvable")
 
+    # Re-validate path is within storage as belt-and-suspenders check
+    storage_base = os.path.realpath(campaign.storage_path)
+    resolved_path = os.path.realpath(file_path)
+    if not resolved_path.startswith(storage_base + os.sep):
+        raise HTTPException(status_code=403, detail="Accès refusé")
+
     # Detect MIME and always serve inline (never force download)
     mime = guess_inline_content_type(file_path)
     return FileResponse(
-        str(file_path),
+        resolved_path,
         media_type=mime,
         content_disposition_type="inline",
     )
