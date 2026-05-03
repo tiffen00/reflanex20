@@ -24,17 +24,15 @@ from pydantic import BaseModel
 from backend.auth import (
     require_auth,
     require_session,
-    verify_web_credentials,
-    create_session_token,
     verify_session_token,
     get_session_secret,
 )
+from backend import auth_routes as auth_routes_module
 from backend.config import settings, get_resolved_token, get_antibot_secret
 import backend.dao as dao
 from backend.db import get_supabase
 from backend.geoip import lookup_country
 from backend.mime import guess_inline_content_type
-from backend.rate_limit import login_rate_limiter
 import backend.storage_supabase as storage_sb
 from backend.storage import StorageError
 from backend.utils import generate_slug, slugify, build_url_template, make_public_url_for_slug
@@ -367,11 +365,6 @@ class NewLinkBody(BaseModel):
     domain: Optional[str] = None
 
 
-class LoginBody(BaseModel):
-    username: str
-    password: str
-
-
 # ──────────────────────────────────────────────
 # Helpers
 # ──────────────────────────────────────────────
@@ -690,19 +683,8 @@ async def _check_click_alerts(link_id: int):
 
 admin_router = APIRouter()
 
-
-def _get_client_ip(request: Request) -> str:
-    forwarded_for = request.headers.get("x-forwarded-for")
-    if forwarded_for:
-        return forwarded_for.split(",")[0].strip()
-    if request.client:
-        return request.client.host
-    return "unknown"
-
-
-def _is_secure(request: Request) -> bool:
-    base = settings.PUBLIC_BASE_URL
-    return base.startswith("https") or request.url.scheme == "https"
+# Mount the auth sub-router (login, logout, /me) — defined in auth_routes.py
+admin_router.include_router(auth_routes_module.router)
 
 
 # ──────────────────────────────────────────────
@@ -720,72 +702,6 @@ async def serve_dashboard(request: Request):
     if not session_token or not verify_session_token(session_token):
         return RedirectResponse(url=f"{settings.ADMIN_PATH_PREFIX}/login", status_code=302)
     return _serve_html_with_prefix("index.html")
-
-
-# ──────────────────────────────────────────────
-# Auth API
-# ──────────────────────────────────────────────
-
-@admin_router.post("/api/auth/login")
-async def auth_login(body: LoginBody, request: Request):
-    try:
-        ip = _get_client_ip(request)
-
-        if not login_rate_limiter.is_allowed(ip):
-            retry_after = login_rate_limiter.retry_after(ip)
-            logger.warning("Rate limit exceeded for login from IP %s", ip)
-            return JSONResponse(
-                {"detail": "Too many login attempts. Try again later."},
-                status_code=429,
-                headers={"Retry-After": str(retry_after)},
-            )
-
-        if not verify_web_credentials(body.username, body.password):
-            logger.warning("Failed login attempt for username=%r from IP %s", body.username, ip)
-            return JSONResponse({"detail": "Invalid username or password"}, status_code=401)
-
-        logger.info("Successful login for username=%r from IP %s", body.username, ip)
-
-        try:
-            from backend.telegram_bot import send_login_success
-            await send_login_success(body.username, ip)
-        except RuntimeError as exc:
-            logger.warning("Bot not ready for login notification (RuntimeError): %s.", exc)
-        except Exception as exc:
-            logger.warning("Could not send login success notification: %s", exc)
-
-        token = create_session_token(body.username)
-        secure = _is_secure(request)
-        resp = JSONResponse({"ok": True})
-        resp.set_cookie(
-            key="session",
-            value=token,
-            httponly=True,
-            secure=secure,
-            samesite="lax",
-            max_age=settings.SESSION_TTL_HOURS * 3600,
-            path="/",
-        )
-        return resp
-
-    except Exception as exc:
-        logger.exception("Unexpected error in auth_login: %s", exc)
-        return JSONResponse(
-            {"detail": f"Erreur serveur : {type(exc).__name__}"},
-            status_code=500,
-        )
-
-
-@admin_router.post("/api/auth/logout")
-async def auth_logout():
-    resp = JSONResponse({"ok": True})
-    resp.delete_cookie(key="session", path="/")
-    return resp
-
-
-@admin_router.get("/api/auth/me")
-async def auth_me(payload: dict = Depends(require_session)):
-    return {"username": payload.get("sub")}
 
 
 # ──────────────────────────────────────────────

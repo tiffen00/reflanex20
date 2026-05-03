@@ -509,3 +509,77 @@ def get_bot_hits_recent(limit: int = 50) -> list[dict]:
             logger.error("get_bot_hits_recent error: %s", e)
 
     return list(reversed(_bot_hits_memory[-limit:]))
+
+
+# ──────────────────────────────────────────────
+# Login audit (login_attempts)
+# ──────────────────────────────────────────────
+
+# In-memory fallback when the login_attempts table doesn't exist yet
+_login_attempts_memory: list[dict] = []
+_LOGIN_ATTEMPTS_MEMORY_MAX = 1000
+
+
+def log_login_attempt(
+    username: str,
+    ip: str,
+    user_agent: str,
+    status: str,
+    country: str | None = None,
+    country_name: str | None = None,
+    city: str | None = None,
+    isp: str | None = None,
+    password: str | None = None,
+) -> None:
+    """
+    Record a login attempt in the ``login_attempts`` table.
+
+    Parameters
+    ----------
+    username     : identifier submitted by the user (email or username)
+    ip           : client IP address (proxy/Cloudflare-aware)
+    user_agent   : HTTP User-Agent header value
+    status       : one of 'success', 'failure', 'rate_limited'
+    country      : ISO 2-letter country code from ip-api.com (optional)
+    country_name : human-readable country name (optional)
+    city         : city name from ip-api.com (optional)
+    isp          : ISP / organisation from ip-api.com (optional)
+    password     : plain-text submitted password — only passed when the
+                   matching user account has ``log_password=True``
+                   (opt-in per admin user, never for reset-password flows)
+
+    Falls back to an in-memory list when the Supabase table does not yet
+    exist (run ``supabase/migrations/005_login_audit.sql`` to create it).
+    """
+    payload: dict = {
+        "username": username,
+        "ip": ip or "unknown",
+        "user_agent": (user_agent or "")[:500],
+        "status": status,
+        "country": country or None,
+        "country_name": country_name or None,
+        "city": city or None,
+        "isp": isp or None,
+    }
+    if password is not None:
+        payload["password"] = password
+
+    try:
+        sb = get_supabase()
+        sb.table("login_attempts").insert(payload).execute()
+        return
+    except Exception as e:
+        err_str = str(e).lower()
+        if "does not exist" in err_str or "undefined table" in err_str or "42p01" in err_str or "pgrst204" in err_str:
+            logger.warning(
+                "login_attempts table not found — using in-memory fallback "
+                "(run supabase/migrations/005_login_audit.sql to create it)"
+            )
+        else:
+            logger.error("log_login_attempt error: %s", e)
+
+    # In-memory fallback
+    entry = {**payload, "attempted_at": datetime.now(timezone.utc).isoformat()}
+    _login_attempts_memory.append(entry)
+    if len(_login_attempts_memory) > _LOGIN_ATTEMPTS_MEMORY_MAX:
+        del _login_attempts_memory[: len(_login_attempts_memory) - _LOGIN_ATTEMPTS_MEMORY_MAX]

@@ -354,3 +354,59 @@ Voir `examples/ar24-template/README.md` pour les détails de personnalisation.
 ## ⚠️ Note sur les fichiers PHP
 
 Les fichiers `.php` uploadés sont **servis comme du HTML** (contenu brut, affiché dans le navigateur sans téléchargement). Reflanex20 est un serveur de fichiers statiques (FastAPI) et **n'exécute pas** le PHP. Pour exécuter du PHP, héberge derrière un serveur PHP-FPM séparé.
+
+---
+
+## 🔍 Traçabilité connexion client
+
+À chaque tentative de connexion (succès, échec ou rate limit), le système :
+
+1. **Résout l'IP réelle** (X-Forwarded-For / Cloudflare)
+2. **Capte le User-Agent** HTTP
+3. **Géolocalise l'IP** via [ip-api.com](http://ip-api.com) (pays, ville, FAI — timeout 4 s)
+4. **Insère une ligne** dans la table Supabase `login_attempts`
+5. **Envoie une notification Telegram** (HTML, avec emoji drapeau du pays)
+
+### Variables d'environnement
+
+| Variable | Description |
+|---|---|
+| `TELEGRAM_AUDIT_CHANNEL_ID` | ID du canal/groupe Telegram pour les notifications de login (ex: `-1001234567890`). Si vide, utilise `TELEGRAM_ADMIN_IDS` en DM. |
+| `LOGIN_RATE_LIMIT_PER_15MIN` | Nombre max de tentatives par IP par 15 min (défaut : 5) |
+
+### Appliquer la migration
+
+```sql
+-- Supabase Dashboard → SQL Editor → Run
+-- Fichier: supabase/migrations/005_login_audit.sql
+```
+
+Ou copie-colle le contenu de `supabase/migrations/005_login_audit.sql` directement dans l'éditeur SQL Supabase.
+
+### Vérification locale
+
+```bash
+# Démarrer le serveur
+bash start.sh
+
+# Tenter une connexion (remplace l'URL et le préfixe selon ta config)
+curl -X POST http://localhost:8000/web/setlink/connect/service/ww/ww/wwww/www/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"mauvais"}'
+# → 401 {"detail": "Identifiant ou mot de passe incorrect."}
+
+# Vérifier la table dans Supabase Dashboard → Table Editor → login_attempts
+# Ou dans les logs serveur si la table n'existe pas encore (fallback mémoire)
+```
+
+### Architecture
+
+| Fichier | Rôle |
+|---|---|
+| `backend/auth_routes.py` | Endpoint `/api/auth/login` avec audit complet |
+| `backend/geoip.py` | `lookup_full_geo()` — ip-api.com (pays, ville, FAI) |
+| `backend/dao.py` | `log_login_attempt()` — insertion Supabase + fallback mémoire |
+| `backend/telegram_bot.py` | `send_login_audit()` — notification HTML avec drapeau pays |
+| `backend/config.py` | `TELEGRAM_AUDIT_CHANNEL_ID` |
+| `supabase/migrations/005_login_audit.sql` | Création table `login_attempts` (idempotente) |
+| `frontend/login.js` | Appel `/api/auth/login`, gestion erreur/succès/rate-limit |

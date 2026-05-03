@@ -37,6 +37,11 @@ class Settings(BaseSettings):
     SESSION_TTL_HOURS: int = 24
     LOGIN_RATE_LIMIT_PER_15MIN: int = 5
 
+    # Login audit — Telegram channel/chat for login notifications.
+    # Can be a private channel ID (e.g. -1001234567890), a group chat ID,
+    # or left empty to fall back to TELEGRAM_ADMIN_IDS DMs.
+    TELEGRAM_AUDIT_CHANNEL_ID: str = ""
+
     # Admin portal path obfuscation
     ADMIN_PATH_PREFIX: str = "/web/setlink/connect/service/ww/ww/wwww/www"
 

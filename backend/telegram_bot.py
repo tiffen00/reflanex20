@@ -1628,21 +1628,103 @@ async def set_bot_username(bot: Bot) -> None:
 # Auth notification helpers
 # ──────────────────────────────────────────────
 
-async def send_login_success(username: str, ip: str) -> None:
+# Map ISO country code → flag emoji
+def _country_flag(code: str) -> str:
+    """Convert a 2-letter ISO country code to its flag emoji (Unicode regional indicators)."""
+    if not code or len(code) != 2:
+        return "🏳"
+    return chr(0x1F1E6 + ord(code[0].upper()) - ord('A')) + chr(0x1F1E6 + ord(code[1].upper()) - ord('A'))
+
+
+async def send_login_audit(
+    username: str,
+    ip: str,
+    user_agent: str,
+    status: str,
+    country: str = "",
+    country_name: str = "",
+    city: str = "",
+    isp: str = "",
+) -> None:
+    """
+    Send a login audit notification to the configured Telegram destination.
+
+    The destination is resolved in order:
+      1. ``TELEGRAM_AUDIT_CHANNEL_ID`` — a dedicated private channel / group
+      2. ``TELEGRAM_ADMIN_IDS``        — fallback: DM to each admin user
+
+    Parameters
+    ----------
+    username     : identifier used in the login attempt
+    ip           : client IP address
+    user_agent   : HTTP User-Agent header
+    status       : 'success' | 'failure' | 'rate_limited'
+    country      : ISO 2-letter country code (from ip-api.com)
+    country_name : human-readable country name
+    city         : city name
+    isp          : ISP / org name
+    """
     if _bot_instance is None:
         return
-    admin_ids = settings.get_admin_ids()
-    if not admin_ids:
-        return
+
     now_str = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+    if status == "success":
+        icon = "✅"
+        status_label = "Connexion réussie"
+    elif status == "rate_limited":
+        icon = "🚫"
+        status_label = "Trop de tentatives (rate limit)"
+    else:
+        icon = "❌"
+        status_label = "Échec de connexion"
+
+    flag = _country_flag(country) if country else "🌍"
+    geo_parts = []
+    if city:
+        geo_parts.append(city)
+    if country_name:
+        geo_parts.append(country_name)
+    geo_str = ", ".join(geo_parts) if geo_parts else "Inconnu"
+
+    # Truncate User-Agent for readability
+    ua_display = (user_agent[:120] + "…") if len(user_agent) > 120 else user_agent
+    if not ua_display:
+        ua_display = "—"
+
     message = (
-        f"✅ <b>Connexion réussie</b>\n\n"
-        f"Utilisateur : <code>{username}</code>\n"
-        f"IP : <code>{ip}</code>\n"
-        f"Heure : {now_str}"
+        f"{icon} <b>{status_label}</b>\n\n"
+        f"👤 Utilisateur : <code>{username}</code>\n"
+        f"🌐 IP : <code>{ip}</code>\n"
+        f"{flag} Localisation : {geo_str}\n"
+        f"📡 FAI : {isp or '—'}\n"
+        f"🖥 User-Agent : <code>{ua_display}</code>\n"
+        f"🕐 Heure : {now_str}"
     )
-    for admin_id in admin_ids:
+
+    # Determine recipients
+    recipients: list = []
+    if settings.TELEGRAM_AUDIT_CHANNEL_ID:
+        # Dedicated audit channel (string: channel ID like "-1001234567890" or "@channelname")
+        chan = settings.TELEGRAM_AUDIT_CHANNEL_ID.strip()
+        # Convert to int if it looks like a numeric ID
         try:
-            await _bot_instance.send_message(chat_id=admin_id, text=message, parse_mode="HTML")
+            recipients.append(int(chan))
+        except ValueError:
+            recipients.append(chan)
+    else:
+        recipients = settings.get_admin_ids()
+
+    if not recipients:
+        return
+
+    for dest in recipients:
+        try:
+            await _bot_instance.send_message(chat_id=dest, text=message, parse_mode="HTML")
         except Exception as exc:
-            logger.warning("Could not send login-success notification to %s: %s", admin_id, exc)
+            logger.warning("Could not send login audit notification to %s: %s", dest, exc)
+
+
+async def send_login_success(username: str, ip: str) -> None:
+    """Legacy helper kept for backward compatibility — delegates to send_login_audit."""
+    await send_login_audit(username=username, ip=ip, user_agent="", status="success")
