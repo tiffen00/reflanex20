@@ -349,7 +349,11 @@ def update_link_domain(slug: str, domain: str) -> None:
 
 
 def set_link_domain(link_id: int, domain: Optional[str]) -> None:
-    """Update the custom domain of a link identified by its id."""
+    """Update the custom domain of a link identified by its numeric *id*.
+
+    This companion to :func:`update_link_domain` (which takes a slug) is
+    provided for callers that have the row id rather than the slug.
+    """
     try:
         sb = get_supabase()
         sb.table("links").update({"domain": domain}).eq("id", link_id).execute()

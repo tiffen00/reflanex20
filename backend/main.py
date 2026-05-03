@@ -1005,9 +1005,9 @@ async def serve_long_url(full_path: str, request: Request):
         raise HTTPException(status_code=404, detail="Page introuvable")
     slug = match.group(1)
 
-    # Determine whether the portion after the slug is a real file (has an
-    # extension) or a decorative suffix like "auth" / "confirm".
-    after_slug = full_path.split(slug, 1)[1].lstrip("/") if slug in full_path else ""
+    # The portion of the path that comes *after* the slug (and after any
+    # trailing separator).  match.end() points past the slug; skip the leading "/".
+    after_slug = ("/" + full_path)[match.end():].lstrip("/")
     last_segment = after_slug.split("/")[-1] if after_slug else ""
     if after_slug and "." in last_segment:
         # Looks like an asset path (e.g. "images/logo.png")

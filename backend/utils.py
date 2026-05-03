@@ -56,7 +56,12 @@ _URL_SUFFIXES = [
 
 
 def generate_slug(length: int = DEFAULT_SLUG_LENGTH) -> str:
-    """Generate a random slug (default 32 chars, mixed-case + digits, ~190-bit entropy)."""
+    """Generate a random slug.
+
+    Default is 32 chars from a 62-char alphabet (a–z, A–Z, 0–9) which gives
+    log2(62^32) ≈ 190 bits of entropy — impossible to brute-force.
+    Pass an explicit *length* to override the default.
+    """
     return "".join(secrets.choice(_SLUG_CHARS_LONG) for _ in range(length))
 
 
