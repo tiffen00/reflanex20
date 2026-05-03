@@ -92,7 +92,8 @@ async def lookup_full_geo(ip: str) -> dict:
     try:
         # ip-api.com free tier: up to 45 req/min, no API key needed.
         # Fields: status, countryCode, country, city, isp
-        url = f"http://ip-api.com/json/{ip}?fields=status,countryCode,country,city,isp"
+        # Using HTTPS to protect geolocation queries from eavesdropping.
+        url = f"https://ip-api.com/json/{ip}?fields=status,countryCode,country,city,isp"
         async with httpx.AsyncClient(timeout=4.0) as client:
             r = await client.get(url)
         if r.status_code == 200:

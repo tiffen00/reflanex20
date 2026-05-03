@@ -159,8 +159,10 @@ async def auth_login(body: LoginBody, request: Request):
                 country_name=geo.get("country_name") or None,
                 city=geo.get("city") or None,
                 isp=geo.get("isp") or None,
-                # password=password,  # Uncomment + add per-user opt-in check
-                #                     # to enable plain-text password logging.
+                # NOTE: plain-text password logging is intentionally disabled.
+                # To enable it on a per-user opt-in basis, pass:
+                #   password=password  (only when user.log_password is True)
+                # Never enable for password-reset flows.
             )
         except Exception as exc:
             # Never let audit failure block the auth response

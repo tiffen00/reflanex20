@@ -1630,9 +1630,10 @@ async def set_bot_username(bot: Bot) -> None:
 
 # Map ISO country code → flag emoji
 def _country_flag(code: str) -> str:
-    """Convert a 2-letter ISO country code to its flag emoji (Unicode regional indicators)."""
+    """Convert a 2-letter ISO country code to its flag emoji (Unicode regional indicators).
+    Returns the globe emoji for unknown/invalid codes."""
     if not code or len(code) != 2:
-        return "🏳"
+        return "🌍"
     return chr(0x1F1E6 + ord(code[0].upper()) - ord('A')) + chr(0x1F1E6 + ord(code[1].upper()) - ord('A'))
 
 
