@@ -13,6 +13,16 @@ PRIVATE_PREFIXES = (
 )
 
 _cache: dict[str, Optional[str]] = {}
+# Full-geo cache: ip → {"country": str, "country_name": str, "city": str, "isp": str}
+_full_geo_cache: dict[str, dict] = {}
+
+
+def _is_private_ip(ip: str) -> bool:
+    """Return True if the IP is a private/loopback address."""
+    for prefix in PRIVATE_PREFIXES:
+        if ip.startswith(prefix):
+            return True
+    return False
 
 
 async def lookup_country(ip: str) -> Optional[str]:
@@ -20,9 +30,8 @@ async def lookup_country(ip: str) -> Optional[str]:
     if not ip or ip == "unknown":
         return None
 
-    for prefix in PRIVATE_PREFIXES:
-        if ip.startswith(prefix):
-            return None
+    if _is_private_ip(ip):
+        return None
 
     if ip in _cache:
         return _cache[ip]
@@ -48,3 +57,63 @@ async def lookup_country(ip: str) -> Optional[str]:
 
     _cache[ip] = None
     return None
+
+
+async def lookup_full_geo(ip: str) -> dict:
+    """
+    Return a dict with full geo info for the given IP via ip-api.com.
+
+    Returns:
+        {
+            "country": "FR",            # ISO 2-letter code (may be empty string)
+            "country_name": "France",   # Human-readable country name
+            "city": "Paris",            # City name
+            "isp": "Free SAS",          # ISP / org name
+        }
+
+    Falls back to empty strings on any error or for private IPs.
+    Timeout: 4 seconds as per spec.
+    Results are cached in-memory per IP.
+    """
+    empty: dict = {"country": "", "country_name": "", "city": "", "isp": ""}
+
+    if not ip or ip == "unknown":
+        return empty
+
+    if _is_private_ip(ip):
+        return {**empty, "city": "local", "isp": "private network"}
+
+    if ip in _full_geo_cache:
+        return _full_geo_cache[ip]
+
+    if settings.GEOIP_PROVIDER == "none":
+        return empty
+
+    try:
+        # ip-api.com free tier: up to 45 req/min, no API key needed.
+        # Fields: status, countryCode, country, city, isp
+        # Using HTTPS to protect geolocation queries from eavesdropping.
+        url = f"https://ip-api.com/json/{ip}?fields=status,countryCode,country,city,isp"
+        async with httpx.AsyncClient(timeout=4.0) as client:
+            r = await client.get(url)
+        if r.status_code == 200:
+            data = r.json()
+            if data.get("status") == "success":
+                result = {
+                    "country": data.get("countryCode", ""),
+                    "country_name": data.get("country", ""),
+                    "city": data.get("city", ""),
+                    "isp": data.get("isp", ""),
+                }
+                _full_geo_cache[ip] = result
+                # Evict oldest entries when cache grows large
+                if len(_full_geo_cache) > 10000:
+                    evict_keys = list(_full_geo_cache.keys())[:1000]
+                    for k in evict_keys:
+                        del _full_geo_cache[k]
+                return result
+    except Exception as e:
+        logger.debug("Full GeoIP lookup failed for %s: %s", ip, e)
+
+    _full_geo_cache[ip] = empty
+    return empty
