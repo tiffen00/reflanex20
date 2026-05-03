@@ -145,18 +145,6 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("🛡️  Anti-bot protection DISABLED (ANTIBOT_ENABLED=false)")
 
-    # Seed protected campaigns (idempotent)
-    if settings.SUPABASE_URL and settings.SUPABASE_SERVICE_KEY:
-        try:
-            from backend.seed import ensure_protected_campaign
-            await ensure_protected_campaign()
-        except Exception as exc:
-            logger.error("❌ Could not seed protected campaigns: %s", exc)
-    else:
-        logger.error(
-            "❌ Cannot seed AR24: missing SUPABASE_URL/SUPABASE_SERVICE_KEY"
-        )
-
     # Start Telegram bot if token is configured
     bot_task = None
     if settings.TELEGRAM_BOT_TOKEN:
