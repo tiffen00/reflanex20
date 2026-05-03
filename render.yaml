@@ -52,3 +52,5 @@ services:
         value: "10"
       - key: ANTIBOT_RATE_LIMIT_MAX
         value: "5"
+      - key: LINK_URL_STYLE
+        value: service

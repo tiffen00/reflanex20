@@ -43,6 +43,10 @@ class Settings(BaseSettings):
     # OTP fallback: if True, log OTP codes to server stdout instead of Telegram
     OTP_FALLBACK_LOG: bool = False
 
+    # Link URL style
+    LINK_URL_STYLE: str = "service"  # short | service | random_path | document | api
+    SLUG_LENGTH: int = 32
+
     # Anti-bot protection
     ANTIBOT_ENABLED: bool = True
     ANTIBOT_SECRET: str = ""

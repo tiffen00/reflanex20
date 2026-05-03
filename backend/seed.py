@@ -117,73 +117,126 @@ async def ensure_protected_campaign() -> None:
     """
     name = "ar24"
     src_dir = AR24_TEMPLATE_DIR
+
+    logger.info("🌱 [SEED] Starting AR24 seed check…")
+    logger.info("🌱 [SEED] Source dir: %s (exists=%s)", src_dir, src_dir.exists())
+
     if not src_dir.exists():
         logger.error(
-            "❌ AR24 template source missing at %s — cannot seed protected campaign",
+            "🌱 [SEED] ❌ ABORT: AR24 template source missing at %s — cannot seed protected campaign",
             src_dir,
         )
         return
 
+    src_files = [p for p in src_dir.rglob("*") if p.is_file()]
+    logger.info(
+        "🌱 [SEED] Source contains %d file(s): %s",
+        len(src_files),
+        [f.name for f in src_files],
+    )
+
     # Ensure the storage bucket is present before any DB/storage operations
     try:
+        logger.info("🌱 [SEED] Checking Supabase bucket '%s'…", BUCKET)
         _ensure_bucket_exists()
-    except Exception:
-        # Error already logged inside _ensure_bucket_exists(); abort seed.
+        logger.info("🌱 [SEED] Bucket '%s': ok", BUCKET)
+    except Exception as exc:
+        logger.error("🌱 [SEED] ❌ ABORT: bucket check failed: %s", exc)
+        return
+
+    # Schema sanity-check: confirm the campaigns table has the is_protected column
+    try:
+        sb = get_supabase()
+        sb.table("campaigns").select("id,is_protected").limit(1).execute()
+        logger.info("🌱 [SEED] Schema check: ok (campaigns.is_protected present)")
+    except Exception as exc:
+        if _is_schema_error(exc):
+            logger.error(
+                "🌱 [SEED] ❌ ABORT: schema not migrated — run supabase/schema.sql "
+                "+ 003_protected_campaigns.sql. Detail: %s",
+                exc,
+            )
+        else:
+            logger.error("🌱 [SEED] ❌ ABORT: schema check failed: %s", exc)
         return
 
     try:
         campaign = dao.get_campaign_by_name(name)
+        logger.info(
+            "🌱 [SEED] DB lookup '%s': %s",
+            name,
+            ("FOUND id=" + str(campaign["id"])) if campaign else "not found",
+        )
     except Exception as exc:
         if _is_schema_error(exc):
             logger.error(
-                "❌ Schema not migrated. Run supabase/schema.sql first. Detail: %s", exc
+                "🌱 [SEED] ❌ ABORT: schema not migrated. Run supabase/schema.sql first. Detail: %s",
+                exc,
             )
         else:
-            logger.error("❌ Could not query campaigns table: %s", exc)
+            logger.error("🌱 [SEED] ❌ ABORT: could not query campaigns table: %s", exc)
         return
 
     if campaign is None:
-        logger.info("Seeding protected campaign '%s' from %s …", name, src_dir)
+        logger.info("🌱 [SEED] Creating AR24 from scratch…")
         try:
             storage_path, entry_file = _upload_directory_to_storage(src_dir, name, version=1)
-            dao.create_campaign(
+            logger.info("🌱 [SEED] Files uploaded to: %s, entry=%s", storage_path, entry_file)
+            created = dao.create_campaign(
                 name=name,
                 storage_path=storage_path,
                 entry_file=entry_file,
                 original_filename="ar24-template",
                 is_protected=True,
             )
-            logger.info("✅ Seeded protected campaign '%s' (storage_path=%s)", name, storage_path)
+            logger.info(
+                "🌱 [SEED] ✅ AR24 CREATED: id=%s name=%s storage_path=%s",
+                created.get("id"),
+                created.get("name"),
+                created.get("storage_path"),
+            )
         except Exception as exc:
             if _is_schema_error(exc):
                 logger.error(
-                    "❌ Schema not migrated. Run supabase/schema.sql first. Detail: %s", exc
+                    "🌱 [SEED] ❌ Schema not migrated. Run supabase/schema.sql first. Detail: %s",
+                    exc,
                 )
             else:
-                logger.error("❌ Failed to seed protected campaign '%s': %s", name, exc)
+                logger.exception("🌱 [SEED] ❌ Creation failed: %s", exc)
         return
 
     # Campaign already exists — ensure protection flag is set
+    logger.info(
+        "🌱 [SEED] AR24 already exists (id=%s, is_protected=%s)",
+        campaign["id"],
+        campaign.get("is_protected"),
+    )
     if not campaign.get("is_protected"):
         try:
             dao.set_campaign_protected(campaign["id"], True)
-            logger.info("Set is_protected=true on existing '%s' campaign (id=%s)", name, campaign["id"])
+            logger.info(
+                "🌱 [SEED] Set is_protected=true on existing '%s' campaign (id=%s)",
+                name,
+                campaign["id"],
+            )
         except Exception as exc:
-            logger.warning("Could not set is_protected on campaign '%s': %s", name, exc)
+            logger.warning("🌱 [SEED] Could not set is_protected on campaign '%s': %s", name, exc)
 
     # Verify files exist; re-upload if missing
     storage_path = campaign.get("storage_path", "")
+    logger.info("🌱 [SEED] Checking storage path: '%s'…", storage_path)
     if storage_path and not _storage_exists(storage_path):
         logger.warning(
-            "AR24 storage missing at '%s', re-uploading from template …", storage_path
+            "🌱 [SEED] AR24 storage missing at '%s', re-uploading from template…",
+            storage_path,
         )
         try:
             new_storage_path, entry_file = _upload_directory_to_storage(
                 src_dir, name, version=campaign.get("version", 1)
             )
             dao.update_campaign_storage(campaign["id"], new_storage_path, entry_file)
-            logger.info("✅ Re-uploaded AR24 storage to '%s'", new_storage_path)
+            logger.info("🌱 [SEED] ✅ Re-uploaded AR24 storage to '%s'", new_storage_path)
         except Exception as exc:
-            logger.error("❌ Failed to re-upload AR24 storage: %s", exc)
+            logger.error("🌱 [SEED] ❌ Failed to re-upload AR24 storage: %s", exc)
     else:
-        logger.info("✅ Protected campaign '%s' is present and complete.", name)
+        logger.info("🌱 [SEED] ✅ Protected campaign '%s' is present and complete.", name)
