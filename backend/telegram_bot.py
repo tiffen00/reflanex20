@@ -26,7 +26,7 @@ from backend.config import settings
 import backend.dao as dao
 from backend.storage import StorageError
 import backend.storage_supabase as storage_sb
-from backend.utils import generate_slug, slugify
+from backend.utils import generate_slug, slugify, build_url_template, make_public_url_for_slug
 
 logger = logging.getLogger(__name__)
 
@@ -755,7 +755,7 @@ async def callback_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await query.edit_message_text("❌ Campagne introuvable.", reply_markup=_back_to_menu_keyboard())
                 return
             link = _create_link_in_dao(campaign_id, domain)
-            full_url = _make_full_url(link["slug"], link.get("domain"))
+            full_url = _make_full_url(link["slug"], link.get("domain"), link.get("url_template"))
             campaign_name = campaign["name"]
         except Exception as exc:
             logger.exception("link gen error: %s", exc)
@@ -766,11 +766,11 @@ async def callback_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg = (
             "✅ <b>Nouveau lien généré !</b>\n\n"
             f"🔗 <code>{full_url}</code>\n\n"
-            f"📁 Campagne : {campaign_name}\n"
-            f"🆔 Slug : <code>{link['slug']}</code>\n"
-            f"🌐 Domaine : {domain_display}\n\n"
-            "💡 <i>Astuce : appuie sur le lien pour le copier. "
-            "Si le lien est cramé, reviens et génère un nouveau slug !</i>"
+            f"📁 Campagne : <b>{campaign_name}</b>\n"
+            f"🌐 Domaine : {domain_display}\n"
+            f"🆔 Slug : <code>{link['slug']}</code>\n\n"
+            "💡 <i>Appuie sur le lien pour le copier. "
+            "Si le lien est cramé, génère un nouveau slug !</i>"
         )
         await query.edit_message_text(
             msg,
@@ -796,8 +796,10 @@ async def callback_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
             click_limit = link.get("click_limit") or "illimité"
             expires_at = link.get("expires_at") or "aucune"
             campaign_name = campaign["name"] if campaign else "—"
+            full_url = _make_full_url(link["slug"], link.get("domain"), link.get("url_template"))
             msg = (
                 f"🔗 <b>Lien {link['slug']}</b>\n\n"
+                f"🌐 URL : <code>{full_url}</code>\n"
                 f"📁 Campagne : {campaign_name}\n"
                 f"📊 Clics : {total} ({unique} uniques)\n"
                 f"🔘 Statut : {status}\n"
@@ -1369,14 +1371,13 @@ def _create_link_in_dao(campaign_id: int, domain: Optional[str]) -> dict:
     for _ in range(20):
         slug = generate_slug()
         if not dao.get_link_by_slug(slug):
-            return dao.create_link(slug, campaign_id, domain)
+            url_template = build_url_template(slug)
+            return dao.create_link(slug, campaign_id, domain, url_template=url_template)
     raise RuntimeError("Could not generate unique slug")
 
 
-def _make_full_url(slug: str, domain: Optional[str]) -> str:
-    if domain:
-        return f"https://{domain}/c/{slug}/"
-    return f"{settings.PUBLIC_BASE_URL}/c/{slug}/"
+def _make_full_url(slug: str, domain: Optional[str], url_template: Optional[str] = None) -> str:
+    return make_public_url_for_slug(slug, domain, url_template)
 
 
 # ──────────────────────────────────────────────

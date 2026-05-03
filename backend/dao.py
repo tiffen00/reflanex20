@@ -147,6 +147,7 @@ def create_link(
     domain: Optional[str] = None,
     click_limit: Optional[int] = None,
     expires_at: Optional[str] = None,
+    url_template: Optional[str] = None,
 ) -> dict:
     try:
         sb = get_supabase()
@@ -157,6 +158,8 @@ def create_link(
             payload["click_limit"] = click_limit
         if expires_at is not None:
             payload["expires_at"] = expires_at
+        if url_template is not None:
+            payload["url_template"] = url_template
         result = sb.table("links").insert(payload).execute()
         return result.data[0]
     except Exception as e:
@@ -342,6 +345,20 @@ def update_link_domain(slug: str, domain: str) -> None:
         sb.table("links").update({"domain": domain}).eq("slug", slug).execute()
     except Exception as e:
         logger.error("update_link_domain error: %s", e)
+        raise
+
+
+def set_link_domain(link_id: int, domain: Optional[str]) -> None:
+    """Update the custom domain of a link identified by its numeric *id*.
+
+    This companion to :func:`update_link_domain` (which takes a slug) is
+    provided for callers that have the row id rather than the slug.
+    """
+    try:
+        sb = get_supabase()
+        sb.table("links").update({"domain": domain}).eq("id", link_id).execute()
+    except Exception as e:
+        logger.error("set_link_domain error: %s", e)
         raise
 
 

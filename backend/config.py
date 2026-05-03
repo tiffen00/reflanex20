@@ -43,6 +43,10 @@ class Settings(BaseSettings):
     # OTP fallback: if True, log OTP codes to server stdout instead of Telegram
     OTP_FALLBACK_LOG: bool = False
 
+    # Link URL style and slug length (SLUG_LENGTH is used by generate_slug default)
+    LINK_URL_STYLE: str = "service"  # short | service (any non-short value produces a long URL)
+    SLUG_LENGTH: int = 32
+
     # Anti-bot protection
     ANTIBOT_ENABLED: bool = True
     ANTIBOT_SECRET: str = ""
